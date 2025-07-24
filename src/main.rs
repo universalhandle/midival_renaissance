@@ -52,11 +52,11 @@ async fn main(_spawner: Spawner) {
     let mut ep_out_buffer = [0u8; 256];
     let mut config = embassy_stm32::usb::Config::default();
 
-    // Do not enable vbus_detection. This is a safe default that works in all boards.
-    // However, if your USB device is self-powered (can stay powered on if USB is unplugged), you need
-    // to enable vbus_detection to comply with the USB spec. If you enable it, the board
-    // has to support it or USB won't work at all. See docs on `vbus_detection` for details.
-    config.vbus_detection = false;
+    // USB devices which are self-powered (i.e., that can stay powered on if unplugged from the host)
+    // need to enable vbus_detection to comply with the USB spec. Per section 6.10 of the Nucleo board
+    // manual (UM1974), CN13 (the USB port) cannot power the board; external power is necessary.
+    // See docs on `vbus_detection` for details.
+    config.vbus_detection = true;
 
     let driver = Driver::new_fs(
         p.USB_OTG_FS,
@@ -72,6 +72,8 @@ async fn main(_spawner: Spawner) {
     config.manufacturer = Some("Embassy");
     config.product = Some("USB-serial example");
     config.serial_number = Some("12345678");
+    config.self_powered = true;
+    config.max_power = 0;
 
     // Create embassy-usb DeviceBuilder using the driver and config.
     // It needs some buffers for building the descriptors.
