@@ -91,7 +91,7 @@ async fn main(_spawner: Spawner) {
     );
 
     // Create classes on the builder.
-    let mut class = MidiClass::new(&mut builder, 1, 1, 64);
+    let mut class = MidiClass::new(&mut builder, 0, 1, 64);
 
     // Build the builder.
     let mut usb = builder.build();
@@ -133,6 +133,5 @@ async fn midi_echo<'d, T: Instance + 'd>(
         let n = class.read_packet(&mut buf).await?;
         let data = &buf[..n];
         info!("data: {:x}", data);
-        class.write_packet(data).await?;
     }
 }
