@@ -3,18 +3,31 @@
 
 use defmt::{panic, *};
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
-use embassy_stm32::time::Hertz;
-use embassy_stm32::usb::{Driver, Instance};
-use embassy_stm32::{bind_interrupts, peripherals, usb, Config};
-use embassy_usb::class::midi::MidiClass;
-use embassy_usb::driver::EndpointError;
-use embassy_usb::Builder;
+use embassy_stm32::{bind_interrupts, peripherals, time::Hertz, usb, Config};
+use embassy_usb::{class::midi::MidiClass, driver::EndpointError, Builder, UsbDevice};
+use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
+
+type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
+
+#[embassy_executor::task]
+async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
+    usb.run().await
+}
+
+#[embassy_executor::task]
+async fn echo_task(mut class: MidiClass<'static, UsbDriver>) -> ! {
+    loop {
+        class.wait_connection().await;
+        info!("Connected");
+        let _ = midi_echo(&mut class).await;
+        info!("Disconnected");
+    }
+}
 
 // If you are trying this and your USB device doesn't connect, the most
 // common issues are the RCC config and vbus_detection
@@ -22,7 +35,7 @@ bind_interrupts!(struct Irqs {
 // See https://embassy.dev/book/#_the_usb_examples_are_not_working_on_my_board_is_there_anything_else_i_need_to_configure
 // for more information.
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     info!("Hello World!");
 
     let mut config = Config::default();
@@ -49,7 +62,7 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(config);
 
     // Create the driver, from the HAL.
-    let mut ep_out_buffer = [0u8; 256];
+    static ENDPOINT_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
     let mut config = embassy_stm32::usb::Config::default();
 
     // USB devices which are self-powered (i.e., that can stay powered on if unplugged from the host)
@@ -58,12 +71,12 @@ async fn main(_spawner: Spawner) {
     // See docs on `vbus_detection` for details.
     config.vbus_detection = true;
 
-    let driver = Driver::new_fs(
+    let driver = usb::Driver::new_fs(
         p.USB_OTG_FS,
         Irqs,
         p.PA12,
         p.PA11,
-        &mut ep_out_buffer,
+        ENDPOINT_OUT_BUFFER.init([0; 256]),
         config,
     );
 
@@ -77,41 +90,27 @@ async fn main(_spawner: Spawner) {
 
     // Create embassy-usb DeviceBuilder using the driver and config.
     // It needs some buffers for building the descriptors.
-    let mut config_descriptor = [0; 256];
-    let mut bos_descriptor = [0; 256];
-    let mut control_buf = [0; 64];
+    static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+    static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+    static CONTROL_BUFFER: StaticCell<[u8; 64]> = StaticCell::new();
 
     let mut builder = Builder::new(
         driver,
         config,
-        &mut config_descriptor,
-        &mut bos_descriptor,
+        CONFIG_DESCRIPTOR.init([0; 256]),
+        BOS_DESCRIPTOR.init([0; 256]),
         &mut [], // no msos descriptors
-        &mut control_buf,
+        CONTROL_BUFFER.init([0; 64]),
     );
 
     // Create classes on the builder.
-    let mut class = MidiClass::new(&mut builder, 0, 1, 64);
+    let class = MidiClass::new(&mut builder, 0, 1, 64);
 
     // Build the builder.
-    let mut usb = builder.build();
+    let usb = builder.build();
 
-    // Run the USB device.
-    let usb_fut = usb.run();
-
-    // Do stuff with the class!
-    let midi_fut = async {
-        loop {
-            class.wait_connection().await;
-            info!("Connected");
-            let _ = midi_echo(&mut class).await;
-            info!("Disconnected");
-        }
-    };
-
-    // Run everything concurrently.
-    // If we had made everything `'static` above instead, we could do this using separate tasks instead.
-    join(usb_fut, midi_fut).await;
+    unwrap!(spawner.spawn(usb_task(usb)));
+    unwrap!(spawner.spawn(echo_task(class)));
 }
 
 struct Disconnected {}
@@ -125,8 +124,8 @@ impl From<EndpointError> for Disconnected {
     }
 }
 
-async fn midi_echo<'d, T: Instance + 'd>(
-    class: &mut MidiClass<'d, Driver<'d, T>>,
+async fn midi_echo<'d, T: usb::Instance + 'd>(
+    class: &mut MidiClass<'d, usb::Driver<'d, T>>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
     loop {
