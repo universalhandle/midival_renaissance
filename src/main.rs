@@ -80,11 +80,14 @@ async fn main(spawner: Spawner) {
         config,
     );
 
-    // Create embassy-usb Config
-    let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
-    config.manufacturer = Some("Embassy");
-    config.product = Some("USB-serial example");
-    config.serial_number = Some("12345678");
+    // per https://pid.codes, FOSS projects can apply to be listed under the vendor ID owned by InterBiometrics
+    let vendor_id = 0x1209;
+    // product ID honors the Micromoog (Moog Model 2090) that inspired this project
+    let product_id = 0x2090;
+
+    let mut config = embassy_usb::Config::new(vendor_id, product_id);
+    config.manufacturer = Some("Pawpaw Works");
+    config.product = Some("MIDIval Renaissance");
     config.self_powered = true;
     config.max_power = 0;
 
