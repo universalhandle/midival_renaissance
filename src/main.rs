@@ -1,11 +1,32 @@
 #![no_std]
 #![no_main]
 
+mod active_keys;
+mod configuration;
+mod instrument;
+mod module;
+
+use core::fmt;
+
+use crate::instrument::{
+    Midi,
+    micromoog::{self, Micromoog},
+};
 use defmt::{panic, *};
 use embassy_executor::Spawner;
-use embassy_stm32::{bind_interrupts, peripherals, time::Hertz, usb, Config};
-use embassy_usb::{class::midi::MidiClass, driver::EndpointError, Builder, UsbDevice};
+use embassy_stm32::{
+    Config, bind_interrupts,
+    dac::{Dac, DacCh1, DacCh2, Value},
+    gpio::{Level, Output, Speed},
+    mode::Async,
+    peripherals::{self, DAC1},
+    time::Hertz,
+    usb,
+};
+use embassy_time::Timer;
+use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
 use static_cell::StaticCell;
+
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -16,16 +37,33 @@ type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
 #[embassy_executor::task]
 async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
+    info!("Starting USB task");
     usb.run().await
 }
 
 #[embassy_executor::task]
-async fn echo_task(mut class: MidiClass<'static, UsbDriver>) -> ! {
+async fn echo_task(
+    mut class: MidiClass<'static, UsbDriver>,
+    mut dac: DacCh1<'static, DAC1, Async>,
+    mut switch_trigger: Output<'static>,
+) -> ! {
+    info!("Starting echo task");
     loop {
         class.wait_connection().await;
         info!("Connected");
-        let _ = midi_echo(&mut class).await;
+        let _ = midi_echo(&mut class, &mut dac, &mut switch_trigger).await;
         info!("Disconnected");
+    }
+}
+
+/// Placeholder task to ensure both DAC channels are used, preventing the DAC itself from being disabled;
+/// see https://github.com/embassy-rs/embassy/issues/4577.
+#[embassy_executor::task]
+async fn tbd_task(dac: DacCh2<'static, DAC1, Async>) -> ! {
+    info!("Starting TBD task");
+    loop {
+        Timer::after_secs(60).await;
+        info!("TBD task dummy DAC usage: {}", dac.read());
     }
 }
 
@@ -41,15 +79,20 @@ async fn main(spawner: Spawner) {
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
+        // hse: high-speed external clock
         config.rcc.hse = Some(Hse {
             freq: Hertz(8_000_000),
             mode: HseMode::Bypass,
         });
+
+        // pll: phase-locked loop, crucial for dividing clock
         config.rcc.pll_src = PllSource::HSE;
         config.rcc.pll = Some(Pll {
             prediv: PllPreDiv::DIV4,
             mul: PllMul::MUL216,
             divp: Some(PllPDiv::DIV2), // 8mhz / 4 * 216 / 2 = 216Mhz
+            // per section 5.2 of RM0410: most peripheral clocks are derived from their bus clock, but the 48MHz clock used for USB OTG FS
+            // is derived from main PLL VCO (PLLQ clock) or PLLSAI VCO (PLLSAI clock)
             divq: Some(PllQDiv::DIV9), // 8mhz / 4 * 216 / 9 = 48Mhz
             divr: None,
         });
@@ -112,8 +155,24 @@ async fn main(spawner: Spawner) {
     // Build the builder.
     let usb = builder.build();
 
+    // set up the DAC to output voltage to the synth
+    // per RM0410 (the reference manual for the chip), DAC channel 1 outputs on port A, pin 4
+    let dac_ch1_out = p.PA4;
+    // DMA: direct memory access controller
+    let dac_ch1_dma = p.DMA1_CH5;
+
+    // I set up the second DAC channel but didn't use it
+    let dac_ch2_out = p.PA5;
+    let dac_ch2_dma = p.DMA1_CH6;
+
+    let (dac_ch1, dac_ch2) =
+        Dac::new(p.DAC1, dac_ch1_dma, dac_ch2_dma, dac_ch1_out, dac_ch2_out).split();
+
+    let switch_trigger = Output::new(p.PG0, Level::Low, Speed::Low);
+
     unwrap!(spawner.spawn(usb_task(usb)));
-    unwrap!(spawner.spawn(echo_task(class)));
+    unwrap!(spawner.spawn(echo_task(class, dac_ch1, switch_trigger)));
+    unwrap!(spawner.spawn(tbd_task(dac_ch2)));
 }
 
 struct Disconnected {}
@@ -129,11 +188,21 @@ impl From<EndpointError> for Disconnected {
 
 async fn midi_echo<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
+    dac: &mut DacCh1<'d, DAC1, Async>,
+    switch_trigger: &mut Output<'d>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
+    let mut synth = Micromoog::new(micromoog::Settings::default());
     loop {
         let n = class.read_packet(&mut buf).await?;
-        let data = &buf[..n];
-        info!("data: {:x}", data);
+        let instructions = synth.handle_midi(&buf[..n]);
+        info!("Sending {} to DAC", instructions.keyboard_voltage());
+        info!("Note is {}", instructions.note_on());
+        dac.set(Value::Bit12Right(instructions.keyboard_voltage()));
+        if instructions.note_on() {
+            switch_trigger.set_high();
+        } else {
+            switch_trigger.set_low();
+        }
     }
 }

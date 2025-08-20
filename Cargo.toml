@@ -1,7 +1,7 @@
 # This file was automatically generated.
 
 [package]
-edition = "2021"
+edition = "2024"
 name = "midival_renaissance"
 version = "0.1.0"
 
@@ -32,6 +32,8 @@ embassy-usb = "0.5.0"
 panic-halt = "1.0.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
 static_cell = "2.1.1"
+tinyvec = "1.9.0"
+wmidi = { version = "4.0.10", default-features = false }
 
 [[bin]]
 name = "midival_renaissance"
