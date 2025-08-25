@@ -77,23 +77,20 @@ impl Micromoog {
         }
     }
 
-    /// this belongs in some trait TBD -- and some of these checks really ought to happen earlier (e.g., when the note is received, or when
-    /// the active note is selected); this is much to late to deal with questions of whether or not the note is in range of the attached
-    /// instrument, for example.... furthermore, this isn't a concern of the Micromoog per se but really of any instrument which has a keyboard
+    /// this belongs in some trait TBD; this isn't a concern of the Micromoog per se but really of any instrument which has a keyboard
     fn keyboard_voltage(&self) -> u16 {
-        let mut note = u8::from(self.state.current_note);
+        let note = u8::from(self.state.current_note);
         let key_count = u8::from(self.modules.keyboard.key_count());
         let floor = u8::from(self.modules.keyboard.low_key_note());
         let ceiling = floor + key_count - 1;
 
-        note = if note >= floor && note <= ceiling {
-            note
-        } else {
-            info!(
-                "Played note ({}) out of range; forcing lowest note as an arbitrary default to protect the synth.",
+        if note < floor || note > ceiling {
+            self::panic!(
+                "Played note ({}) out of range; this shouldn't happen because only handle_midi touches the active_keys store, and it has \
+                protections against this. As this code is still young, and I think we can provide better protection, I'm leaving this here to \
+                spare the synth any unsafe voltages. However, I think with better use of types this check can be removed.",
                 note
             );
-            floor
         };
 
         // counting from zero, of course
@@ -119,6 +116,9 @@ impl Micromoog {
 /// the MIDIval Renaissance?
 impl Midi for Micromoog {
     fn handle_midi(&mut self, bytes: &[u8]) -> Instructions {
+        let floor = Note::from(self.modules.keyboard.low_key_note());
+        let ceiling = Note::from(self.modules.keyboard.high_key_note());
+
         let mut i = 0;
         while i < bytes.len() {
             let data = &bytes[i..];
@@ -127,22 +127,40 @@ impl Midi for Micromoog {
                 if let Some(msg) = potential_msg {
                     match msg {
                         MidiMessage::NoteOff(channel, note, velocity) => {
-                            self.state.active_keys.remove(U7::from_u8_lossy(note as u8));
-                            info!(
-                                "Micromoog received a NoteOff event: channel {}, note {}, velocity: {}",
-                                channel.number(),
-                                note.to_str(),
-                                u8::from(velocity)
-                            );
+                            if note >= floor && note <= ceiling {
+                                self.state.active_keys.remove(U7::from_u8_lossy(note as u8));
+                                info!(
+                                    "Micromoog received a NoteOff event: channel {}, note {}, velocity: {}",
+                                    channel.number(),
+                                    note.to_str(),
+                                    u8::from(velocity)
+                                );
+                            } else {
+                                info!(
+                                    "Ignoring out-of-range Note Off event: channel {}, note {}, velocity: {}",
+                                    channel.number(),
+                                    note.to_str(),
+                                    u8::from(velocity)
+                                );
+                            }
                         }
                         MidiMessage::NoteOn(channel, note, velocity) => {
-                            self.state.active_keys.add(U7::from_u8_lossy(note as u8));
-                            info!(
-                                "Micromoog received a NoteOn event: channel {}, note {}, velocity: {}",
-                                channel.number(),
-                                note.to_str(),
-                                u8::from(velocity)
-                            );
+                            if note >= floor && note <= ceiling {
+                                self.state.active_keys.add(U7::from_u8_lossy(note as u8));
+                                info!(
+                                    "Micromoog received a NoteOn event: channel {}, note {}, velocity: {}",
+                                    channel.number(),
+                                    note.to_str(),
+                                    u8::from(velocity)
+                                );
+                            } else {
+                                info!(
+                                    "Ignoring out-of-range Note On event: channel {}, note {}, velocity: {}",
+                                    channel.number(),
+                                    note.to_str(),
+                                    u8::from(velocity)
+                                );
+                            }
                         }
                         _ => {
                             let mut data = [0_u8; 3];

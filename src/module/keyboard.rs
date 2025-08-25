@@ -30,6 +30,11 @@ impl KeyboardSpec {
         self.key_count
     }
 
+    /// Returns the highest note the keyboard can play.
+    pub fn high_key_note(&self) -> U7 {
+        U7::from_u8_lossy(u8::from(self.low_key_note) + u8::from(self.key_count) - 1)
+    }
+
     pub fn volts_per_octave(&self) -> f32 {
         self.volts_per_octave
     }
