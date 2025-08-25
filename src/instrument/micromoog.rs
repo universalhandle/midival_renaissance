@@ -157,12 +157,10 @@ impl Midi for Micromoog {
         // by this point our state re depressed keys is updated; we can calculate a new note and return the new state
         let active = self.state.active_keys.get();
         self.state.current_note = *match self.settings.note_priority {
-            // TBD: how and when should the vec be sorted? e.g., should note priority be taken into account when values go into
-            // state or only when they come out? do we expect note priority to be something that a performer can change? is sorting
-            // a slice a destructive/mutable act in rust by default; does a copy need to be made if we wish to preserve the order?
-            NotePriority::First | NotePriority::Last => self::todo!(),
-            NotePriority::High => active.last(),
-            NotePriority::Low => active.first(),
+            NotePriority::First => active.first(),
+            NotePriority::Last => active.last(),
+            NotePriority::High => active.iter().max(),
+            NotePriority::Low => active.iter().min(),
         }
         .unwrap_or(&self.state.current_note);
 
