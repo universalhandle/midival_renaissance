@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-mod active_keys;
+mod activated_notes;
 mod configuration;
 mod instrument;
 mod module;

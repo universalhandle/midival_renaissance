@@ -1,38 +1,31 @@
-use wmidi::U7;
+use core::ops::RangeInclusive;
+use wmidi::Note;
 
 pub struct KeyboardSpec {
-    low_key_note: U7,
     low_key_voltage: f32,
-    key_count: U7,
+    playable_notes: RangeInclusive<Note>,
     volts_per_octave: f32, // probably needs to be a float, actually
 }
 
 impl KeyboardSpec {
     pub fn new(
-        low_key_note: U7,
         low_key_voltage: f32,
-        key_count: U7,
+        playable_notes: RangeInclusive<Note>,
         volts_per_octave: f32,
     ) -> Self {
+        if playable_notes.start() > playable_notes.end() {
+            panic!("Invalid keyboard specification: range must contain at least one note.")
+        }
+
         Self {
-            low_key_note,
             low_key_voltage,
-            key_count,
+            playable_notes,
             volts_per_octave,
         }
     }
 
-    pub fn low_key_note(&self) -> U7 {
-        self.low_key_note
-    }
-
-    pub fn key_count(&self) -> U7 {
-        self.key_count
-    }
-
-    /// Returns the highest note the keyboard can play.
-    pub fn high_key_note(&self) -> U7 {
-        U7::from_u8_lossy(u8::from(self.low_key_note) + u8::from(self.key_count) - 1)
+    pub fn playable_notes(&self) -> &RangeInclusive<Note> {
+        &self.playable_notes
     }
 
     pub fn volts_per_octave(&self) -> f32 {
@@ -41,5 +34,11 @@ impl KeyboardSpec {
 }
 
 pub trait Keyboard {
-    type Spec;
+    fn get_voltage(&self) -> f32;
+    fn playable_notes(&self) -> &RangeInclusive<Note>;
+    fn volts_per_octave(&self) -> f32;
+
+    fn can_voice(&self, note: &Note) -> bool {
+        self.playable_notes().contains(note)
+    }
 }
