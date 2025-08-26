@@ -2,23 +2,17 @@ use core::ops::RangeInclusive;
 use wmidi::Note;
 
 pub struct KeyboardSpec {
-    low_key_voltage: f32,
     playable_notes: RangeInclusive<Note>,
-    volts_per_octave: f32, // probably needs to be a float, actually
+    volts_per_octave: f32,
 }
 
 impl KeyboardSpec {
-    pub fn new(
-        low_key_voltage: f32,
-        playable_notes: RangeInclusive<Note>,
-        volts_per_octave: f32,
-    ) -> Self {
+    pub fn new(playable_notes: RangeInclusive<Note>, volts_per_octave: f32) -> Self {
         if playable_notes.start() > playable_notes.end() {
             panic!("Invalid keyboard specification: range must contain at least one note.")
         }
 
         Self {
-            low_key_voltage,
             playable_notes,
             volts_per_octave,
         }

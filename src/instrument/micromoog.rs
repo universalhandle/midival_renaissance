@@ -74,7 +74,7 @@ impl Micromoog {
         Self {
             settings,
             modules: Modules {
-                keyboard: KeyboardSpec::new(0.0, Note::F3..=Note::C6, 1.0),
+                keyboard: KeyboardSpec::new(Note::F3..=Note::C6, 1.0),
             },
             state: State::default(),
         }
