@@ -1,10 +1,19 @@
 use defmt::info;
+use enum_dispatch::enum_dispatch;
+use micromoog::Micromoog;
 use wmidi::{Error, MidiMessage};
 
-pub mod micromoog;
+mod micromoog;
 
-pub struct Instrument<S> {
-    settings: S,
+#[enum_dispatch]
+pub enum Instrument {
+    Micromoog(Micromoog),
+}
+
+impl Default for Instrument {
+    fn default() -> Self {
+        Self::Micromoog(Micromoog::default())
+    }
 }
 
 /// Somewhat redundant with State; need to consolidate
@@ -23,6 +32,7 @@ impl Instructions {
     }
 }
 
+#[enum_dispatch(Instrument)]
 pub trait Midi {
     fn handle_midi(&mut self, msg: &[u8]) -> Instructions;
 }

@@ -70,7 +70,7 @@ pub struct Micromoog {
 }
 
 impl Micromoog {
-    pub fn new(settings: Settings) -> Self {
+    fn new(settings: Settings) -> Self {
         Self {
             settings,
             modules: Modules {
@@ -92,6 +92,12 @@ impl Micromoog {
             // Casting to u16 serves as a quick and dirty rounding. The DAC resolution is high enough I don't think this will
             // matter.
             as u16
+    }
+}
+
+impl Default for Micromoog {
+    fn default() -> Self {
+        Self::new(Settings::default())
     }
 }
 

@@ -8,10 +8,7 @@ mod module;
 
 use core::fmt;
 
-use crate::instrument::{
-    Midi,
-    micromoog::{self, Micromoog},
-};
+use crate::instrument::{Instrument, Midi};
 use defmt::{panic, *};
 use embassy_executor::Spawner;
 use embassy_stm32::{
@@ -192,7 +189,7 @@ async fn midi_echo<'d, T: usb::Instance + 'd>(
     switch_trigger: &mut Output<'d>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
-    let mut synth = Micromoog::new(micromoog::Settings::default());
+    let mut synth = Instrument::default();
     loop {
         let n = class.read_packet(&mut buf).await?;
         let instructions = synth.handle_midi(&buf[..n]);
