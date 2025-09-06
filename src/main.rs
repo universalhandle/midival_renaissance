@@ -34,42 +34,6 @@ bind_interrupts!(struct Irqs {
 type InstrumentAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, Instrument>;
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
-#[embassy_executor::task]
-async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
-    usb.run().await
-}
-
-#[embassy_executor::task]
-async fn midi_task(
-    mut class: MidiClass<'static, UsbDriver>,
-    mut dac: DacCh1<'static, DAC1, Async>,
-    mut switch_trigger: Output<'static>,
-    instrument: &'static InstrumentAsyncMutex,
-) -> ! {
-    loop {
-        class.wait_connection().await;
-        info!("Connected");
-        let _ = process_midi(&mut class, &mut dac, &mut switch_trigger, instrument).await;
-        info!("Disconnected");
-    }
-}
-
-/// Placeholder task to ensure both DAC channels are used, preventing the DAC itself from being disabled;
-/// see https://github.com/embassy-rs/embassy/issues/4577.
-#[embassy_executor::task]
-async fn tbd_task(dac: DacCh2<'static, DAC1, Async>) -> ! {
-    info!("Starting TBD task");
-    loop {
-        Timer::after_secs(60).await;
-        info!("TBD task dummy DAC usage: {}", dac.read());
-    }
-}
-
-// If you are trying this and your USB device doesn't connect, the most
-// common issues are the RCC config and vbus_detection
-//
-// See https://embassy.dev/book/#_the_usb_examples_are_not_working_on_my_board_is_there_anything_else_i_need_to_configure
-// for more information.
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     info!("Hello World!");
@@ -176,6 +140,26 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(tbd_task(dac_ch2)));
 }
 
+#[embassy_executor::task]
+async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
+    usb.run().await
+}
+
+#[embassy_executor::task]
+async fn midi_task(
+    mut class: MidiClass<'static, UsbDriver>,
+    mut dac: DacCh1<'static, DAC1, Async>,
+    mut switch_trigger: Output<'static>,
+    instrument: &'static InstrumentAsyncMutex,
+) -> ! {
+    loop {
+        class.wait_connection().await;
+        info!("Connected");
+        let _ = process_midi(&mut class, &mut dac, &mut switch_trigger, instrument).await;
+        info!("Disconnected");
+    }
+}
+
 struct Disconnected {}
 
 impl From<EndpointError> for Disconnected {
@@ -205,5 +189,16 @@ async fn process_midi<'d, T: usb::Instance + 'd>(
         } else {
             switch_trigger.set_low();
         }
+    }
+}
+
+/// Placeholder task to ensure both DAC channels are used, preventing the DAC itself from being disabled;
+/// see https://github.com/embassy-rs/embassy/issues/4577.
+#[embassy_executor::task]
+async fn tbd_task(dac: DacCh2<'static, DAC1, Async>) -> ! {
+    info!("Starting TBD task");
+    loop {
+        Timer::after_secs(60).await;
+        info!("TBD task dummy DAC usage: {}", dac.read());
     }
 }
