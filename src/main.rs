@@ -36,22 +36,20 @@ type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
 #[embassy_executor::task]
 async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
-    info!("Starting USB task");
     usb.run().await
 }
 
 #[embassy_executor::task]
-async fn echo_task(
+async fn midi_task(
     mut class: MidiClass<'static, UsbDriver>,
     mut dac: DacCh1<'static, DAC1, Async>,
     mut switch_trigger: Output<'static>,
     instrument: &'static InstrumentAsyncMutex,
 ) -> ! {
-    info!("Starting echo task");
     loop {
         class.wait_connection().await;
         info!("Connected");
-        let _ = midi_echo(&mut class, &mut dac, &mut switch_trigger, instrument).await;
+        let _ = process_midi(&mut class, &mut dac, &mut switch_trigger, instrument).await;
         info!("Disconnected");
     }
 }
@@ -174,7 +172,7 @@ async fn main(spawner: Spawner) {
     let switch_trigger = Output::new(p.PG0, Level::Low, Speed::Low);
 
     unwrap!(spawner.spawn(usb_task(usb)));
-    unwrap!(spawner.spawn(echo_task(class, dac_ch1, switch_trigger, instrument)));
+    unwrap!(spawner.spawn(midi_task(class, dac_ch1, switch_trigger, instrument)));
     unwrap!(spawner.spawn(tbd_task(dac_ch2)));
 }
 
@@ -189,7 +187,7 @@ impl From<EndpointError> for Disconnected {
     }
 }
 
-async fn midi_echo<'d, T: usb::Instance + 'd>(
+async fn process_midi<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
     dac: &mut DacCh1<'d, DAC1, Async>,
     switch_trigger: &mut Output<'d>,
