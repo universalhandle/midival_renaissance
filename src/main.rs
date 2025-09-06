@@ -20,6 +20,7 @@ use embassy_stm32::{
     time::Hertz,
     usb,
 };
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex};
 use embassy_time::Timer;
 use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
 use static_cell::StaticCell;
@@ -30,6 +31,7 @@ bind_interrupts!(struct Irqs {
     OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
 });
 
+type InstrumentAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, Instrument>;
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
 #[embassy_executor::task]
@@ -43,12 +45,13 @@ async fn echo_task(
     mut class: MidiClass<'static, UsbDriver>,
     mut dac: DacCh1<'static, DAC1, Async>,
     mut switch_trigger: Output<'static>,
+    instrument: &'static InstrumentAsyncMutex,
 ) -> ! {
     info!("Starting echo task");
     loop {
         class.wait_connection().await;
         info!("Connected");
-        let _ = midi_echo(&mut class, &mut dac, &mut switch_trigger).await;
+        let _ = midi_echo(&mut class, &mut dac, &mut switch_trigger, instrument).await;
         info!("Disconnected");
     }
 }
@@ -100,6 +103,9 @@ async fn main(spawner: Spawner) {
         config.rcc.mux.clk48sel = mux::Clk48sel::PLL1_Q;
     }
     let p = embassy_stm32::init(config);
+
+    static INSTRUMENT: StaticCell<InstrumentAsyncMutex> = StaticCell::new();
+    let instrument = INSTRUMENT.init(mutex::Mutex::new(Instrument::default()));
 
     // Create the driver, from the HAL.
     static ENDPOINT_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
@@ -168,7 +174,7 @@ async fn main(spawner: Spawner) {
     let switch_trigger = Output::new(p.PG0, Level::Low, Speed::Low);
 
     unwrap!(spawner.spawn(usb_task(usb)));
-    unwrap!(spawner.spawn(echo_task(class, dac_ch1, switch_trigger)));
+    unwrap!(spawner.spawn(echo_task(class, dac_ch1, switch_trigger, instrument)));
     unwrap!(spawner.spawn(tbd_task(dac_ch2)));
 }
 
@@ -187,12 +193,12 @@ async fn midi_echo<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
     dac: &mut DacCh1<'d, DAC1, Async>,
     switch_trigger: &mut Output<'d>,
+    instrument: &'static InstrumentAsyncMutex,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
-    let mut synth = Instrument::default();
     loop {
         let n = class.read_packet(&mut buf).await?;
-        let instructions = synth.handle_midi(&buf[..n]);
+        let instructions = instrument.lock().await.handle_midi(&buf[..n]);
         info!("Sending {} to DAC", instructions.keyboard_voltage());
         info!("Note is {}", instructions.note_on());
         dac.set(Value::Bit12Right(instructions.keyboard_voltage()));
