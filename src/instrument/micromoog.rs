@@ -1,3 +1,5 @@
+use core::ops::RangeInclusive;
+
 use defmt::*;
 use wmidi::{MidiMessage, Note};
 
@@ -5,8 +7,10 @@ use crate::{
     activated_notes::ActivatedNotes,
     configuration::{EnvelopeTrigger, NotePriority},
     instrument::{Instructions, Midi},
-    io::gate::{Gate, GateState},
-    module::keyboard::{Keyboard, KeyboardSpec},
+    io::{
+        control_voltage::ControlVoltage,
+        gate::{Gate, GateState},
+    },
 };
 
 #[derive(Debug)]
@@ -43,11 +47,6 @@ impl Default for Settings {
     }
 }
 
-/// Immutable stuff about the hardware, like number of keys, voltage/octave values, etc.
-struct Modules {
-    keyboard: KeyboardSpec,
-}
-
 struct State {
     activated_notes: ActivatedNotes,
     current_note: Note,
@@ -66,7 +65,6 @@ impl Default for State {
 // differently for Micromoog<InputMode=Keyboard> vs Micromoog<InputMode=Oscillator>?
 pub struct Micromoog {
     settings: Settings,
-    modules: Modules,
     state: State,
 }
 
@@ -74,16 +72,13 @@ impl Micromoog {
     fn new(settings: Settings) -> Self {
         Self {
             settings,
-            modules: Modules {
-                keyboard: KeyboardSpec::new(Note::F3..=Note::C6, 1.0),
-            },
             state: State::default(),
         }
     }
 
     /// this belongs in some trait TBD; this isn't a concern of the Micromoog per se but really of any instrument which has a keyboard
     fn keyboard_voltage(&self) -> u16 {
-        (self.get_voltage()
+        (self.current_note_to_voltage()
             // This is the reference voltage 3.333333; TODO: this should not be hardcoded, as reference voltages may vary
             / (10.0 / 3.0)
             // The calculation above gives the percentage of the reference voltage; below we scale it to 12 bits; this
@@ -112,18 +107,18 @@ impl Gate for Micromoog {
     }
 }
 
-impl Keyboard for Micromoog {
-    fn get_voltage(&self) -> f32 {
+impl ControlVoltage for Micromoog {
+    fn current_note_to_voltage(&self) -> f32 {
         let nth_key = self.state.current_note as u8 - *self.playable_notes().start() as u8;
         nth_key as f32 * self.volts_per_octave() / 12.0
     }
 
-    fn playable_notes(&self) -> &core::ops::RangeInclusive<Note> {
-        self.modules.keyboard.playable_notes()
+    fn playable_notes(&self) -> RangeInclusive<Note> {
+        Note::F3..=Note::C6
     }
 
     fn volts_per_octave(&self) -> f32 {
-        self.modules.keyboard.volts_per_octave()
+        1.0
     }
 }
 

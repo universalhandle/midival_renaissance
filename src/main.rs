@@ -5,7 +5,6 @@ mod activated_notes;
 mod configuration;
 mod instrument;
 mod io;
-mod module;
 
 use core::fmt;
 
