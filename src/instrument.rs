@@ -1,4 +1,4 @@
-use defmt::info;
+use defmt::error;
 use enum_dispatch::enum_dispatch;
 use micromoog::Micromoog;
 use wmidi::{Error, MidiMessage};
@@ -32,32 +32,55 @@ impl Instructions {
     }
 }
 
+/// A trait for processing MIDI messages.
+///
+/// Because not all MIDI messages have an obvious immediate expression (e.g., BPM) and because sometimes multiple messages are received at once
+/// (e.g., when a chord is played), the processing of input and its expression are separate.
 #[enum_dispatch(Instrument)]
 pub trait Midi {
-    fn handle_midi(&mut self, msg: &[u8]) -> Instructions;
+    /// Updates internal state given a single MIDI message.
+    fn process_midi(&mut self, msg: MidiMessage) -> ();
+
+    /// Updates internal state given one or more MIDI messages.
+    fn process_usb_data(&mut self, data: &[u8]) {
+        let mut bytes = Some(data);
+
+        while let Some(data) = bytes {
+            // unwrapping for now, but need to think about what to do in case the device receives unparseable MIDI;
+            // wouldn't want to crash the device because some controller has a bug...
+            let (msg, unprocessed_bytes) = parse_usb_midi_packets(data).unwrap();
+            bytes = unprocessed_bytes;
+            self.process_midi(msg);
+        }
+    }
+
+    /// Expresses the current state of the implementor.
+    ///
+    /// This is mutable to allow for last-second processing. For example, when multiple keys are depressed, the note priority setting
+    /// becomes important. If there is a glide setting as well, it is more appropriate to calculate the current note, the last note, etc.,
+    /// as the notes are performed rather than as they are received. I'm feeling this out as I go; it may be feasible/desirable to
+    /// separate these concerns later.
+    fn voice(&mut self) -> Instructions;
 }
 
-// This is a fairly janky parser. On "success" it returns (1) an optional MidiMessage as well as (2) the number
-// of bytes that have been processed. The optionality of 1 is due to Embassy [for whatever
-// reason](https://github.com/embassy-rs/embassy/issues/4537) duplicating part of the message; used in
-// a loop, this function can filter out said noise. This provides a partial explanation for 2; the loop can simply
-// skip over bits determined to be errata. The other reason for 2 is that sometimes `data` contains multiple messages
-// (i.e., when a chord is played); knowing how many bits have been processed allows the loop to make additional passes.
-pub fn parse_midi(data: &[u8]) -> Result<(Option<MidiMessage<'_>>, usize), wmidi::FromBytesError> {
-    match MidiMessage::from_bytes(data) {
-        Ok(msg) => {
-            let processed_bytes = msg.bytes_size();
-            Ok((Some(msg), processed_bytes))
-        }
-        Err(e) => match e {
-            Error::UnexpectedDataByte => {
-                info!("Discarding malformed status bit: {:x}", data[0]);
-                Ok((None, 1))
-            }
-            _ => {
-                info!("Unknown parsing problem");
-                Err(e)
-            }
-        },
+/// Attempts to construct a MIDI message from data, four bytes at a time.
+///
+/// Returns the MidiMessage result as well as any unprocessed bytes. As incoming data sometimes contains multiple messages
+// (i.e., when a chord is played), returning the unprocessed bytes allows using this function in a loop to make additional passes.
+fn parse_usb_midi_packets(data: &[u8]) -> Result<(MidiMessage<'_>, Option<&[u8]>), Error> {
+    if data.len() < 4 {
+        error!("USB-MIDI Event Packets must always be 32 bits long");
+        Err(Error::NotEnoughBytes)
+    } else {
+        // the zeroth bit is intentionally ignored because the Packet Header is not of interest; it is the remaining
+        // three bits that contain the actual MIDI event
+        MidiMessage::from_bytes(&data[1..4]).and_then(|msg| {
+            let unprocessed_bytes = if data.len() > 4 {
+                Some(&data[4..])
+            } else {
+                None
+            };
+            Ok((msg, unprocessed_bytes))
+        })
     }
 }

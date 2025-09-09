@@ -57,7 +57,7 @@ impl ActivatedNotes {
         self.data.retain(|&n| n != U7::from_u8_lossy(note as u8));
     }
 
-    pub fn is_empty(&mut self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 }

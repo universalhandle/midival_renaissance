@@ -4,7 +4,7 @@ use wmidi::{MidiMessage, Note};
 use crate::{
     activated_notes::ActivatedNotes,
     configuration::{EnvelopeTrigger, NotePriority},
-    instrument::{Instructions, Midi, parse_midi},
+    instrument::{Instructions, Midi},
     module::keyboard::{Keyboard, KeyboardSpec},
 };
 
@@ -116,64 +116,57 @@ impl Keyboard for Micromoog {
     }
 }
 
-/// Gah this is messy. We probably want to factor state out of this, yadda yadda. And did the Micromoog receive MIDI, or did
-/// the MIDIval Renaissance?
 impl Midi for Micromoog {
-    fn handle_midi(&mut self, bytes: &[u8]) -> Instructions {
-        let mut i = 0;
-        while i < bytes.len() {
-            let data = &bytes[i..];
-
-            if let Ok((potential_msg, bytes_processed)) = parse_midi(data) {
-                if let Some(msg) = potential_msg {
-                    match msg {
-                        MidiMessage::NoteOff(channel, note, velocity) => {
-                            if self.can_voice(&note) {
-                                self.state.activated_notes.remove(note);
-                                info!(
-                                    "Micromoog received a NoteOff event: channel {}, note {}, velocity: {}",
-                                    channel.number(),
-                                    note.to_str(),
-                                    u8::from(velocity)
-                                );
-                            } else {
-                                info!(
-                                    "Ignoring out-of-range Note Off event: channel {}, note {}, velocity: {}",
-                                    channel.number(),
-                                    note.to_str(),
-                                    u8::from(velocity)
-                                );
-                            }
-                        }
-                        MidiMessage::NoteOn(channel, note, velocity) => {
-                            if self.can_voice(&note) {
-                                self.state.activated_notes.add(note);
-                                info!(
-                                    "Micromoog received a NoteOn event: channel {}, note {}, velocity: {}",
-                                    channel.number(),
-                                    note.to_str(),
-                                    u8::from(velocity)
-                                );
-                            } else {
-                                info!(
-                                    "Ignoring out-of-range Note On event: channel {}, note {}, velocity: {}",
-                                    channel.number(),
-                                    note.to_str(),
-                                    u8::from(velocity)
-                                );
-                            }
-                        }
-                        _ => {
-                            let mut data = [0_u8; 3];
-                            msg.copy_to_slice(&mut data).unwrap();
-                            info!("Ignoring valid MIDI message: {}", data);
-                        }
-                    };
+    fn process_midi(&mut self, msg: MidiMessage) -> () {
+        match msg {
+            MidiMessage::NoteOff(channel, note, velocity) => {
+                if self.can_voice(&note) {
+                    self.state.activated_notes.remove(note);
+                    info!(
+                        "Micromoog received a NoteOff event: channel {}, note {}, velocity: {}",
+                        channel.number(),
+                        note.to_str(),
+                        u8::from(velocity)
+                    );
+                } else {
+                    info!(
+                        "Ignoring out-of-range Note Off event: channel {}, note {}, velocity: {}",
+                        channel.number(),
+                        note.to_str(),
+                        u8::from(velocity)
+                    );
                 }
-                i += bytes_processed;
             }
-        }
-        // by this point our state re depressed keys is updated; we can calculate a new note and return the new state
+            MidiMessage::NoteOn(channel, note, velocity) => {
+                if self.can_voice(&note) {
+                    self.state.activated_notes.add(note);
+                    info!(
+                        "Micromoog received a NoteOn event: channel {}, note {}, velocity: {}",
+                        channel.number(),
+                        note.to_str(),
+                        u8::from(velocity)
+                    );
+                } else {
+                    info!(
+                        "Ignoring out-of-range Note On event: channel {}, note {}, velocity: {}",
+                        channel.number(),
+                        note.to_str(),
+                        u8::from(velocity)
+                    );
+                }
+            }
+            _ => {
+                let mut data = [0_u8; 3];
+                msg.copy_to_slice(&mut data).unwrap();
+                info!(
+                    "Micromoog does not implement the following valid MIDI message: {}",
+                    data
+                );
+            }
+        };
+    }
+
+    fn voice(&mut self) -> Instructions {
         self.state.current_note = match self.settings.note_priority {
             NotePriority::First => self.state.activated_notes.first(),
             NotePriority::Last => self.state.activated_notes.last(),

@@ -155,7 +155,7 @@ async fn midi_task(
     loop {
         class.wait_connection().await;
         info!("Connected");
-        let _ = process_midi(&mut class, &mut dac, &mut switch_trigger, instrument).await;
+        let _ = process_usb_data(&mut class, &mut dac, &mut switch_trigger, instrument).await;
         info!("Disconnected");
     }
 }
@@ -171,7 +171,7 @@ impl From<EndpointError> for Disconnected {
     }
 }
 
-async fn process_midi<'d, T: usb::Instance + 'd>(
+async fn process_usb_data<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
     dac: &mut DacCh1<'d, DAC1, Async>,
     switch_trigger: &mut Output<'d>,
@@ -180,7 +180,11 @@ async fn process_midi<'d, T: usb::Instance + 'd>(
     let mut buf = [0; 64];
     loop {
         let n = class.read_packet(&mut buf).await?;
-        let instructions = instrument.lock().await.handle_midi(&buf[..n]);
+        let instructions = {
+            let mut instr = instrument.lock().await;
+            instr.process_usb_data(&buf[..n]);
+            instr.voice()
+        };
         info!("Sending {} to DAC", instructions.keyboard_voltage());
         info!("Note is {}", instructions.note_on());
         dac.set(Value::Bit12Right(instructions.keyboard_voltage()));
