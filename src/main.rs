@@ -4,11 +4,15 @@
 mod activated_notes;
 mod configuration;
 mod instrument;
+mod io;
 mod module;
 
 use core::fmt;
 
-use crate::instrument::{Instrument, Midi};
+use crate::{
+    instrument::{Instrument, Midi},
+    io::gate::Gate,
+};
 use defmt::{panic, *};
 use embassy_executor::Spawner;
 use embassy_stm32::{
@@ -186,11 +190,13 @@ async fn process_usb_data<'d, T: usb::Instance + 'd>(
             instr.voice()
         };
         info!("Sending {} to DAC", instructions.keyboard_voltage());
-        info!("Note is {}", instructions.note_on());
         dac.set(Value::Bit12Right(instructions.keyboard_voltage()));
-        if instructions.note_on() {
+
+        if instrument.lock().await.gate_is_high() {
+            info!("Note is on");
             switch_trigger.set_high();
         } else {
+            info!("Note is off");
             switch_trigger.set_low();
         }
     }

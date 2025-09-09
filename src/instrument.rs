@@ -19,16 +19,11 @@ impl Default for Instrument {
 /// Somewhat redundant with State; need to consolidate
 pub struct Instructions {
     keyboard_voltage: u16,
-    note_on: bool,
 }
 
 impl Instructions {
     pub fn keyboard_voltage(&self) -> u16 {
         self.keyboard_voltage
-    }
-
-    pub fn note_on(&self) -> bool {
-        self.note_on
     }
 }
 

@@ -5,6 +5,7 @@ use crate::{
     activated_notes::ActivatedNotes,
     configuration::{EnvelopeTrigger, NotePriority},
     instrument::{Instructions, Midi},
+    io::gate::{Gate, GateState},
     module::keyboard::{Keyboard, KeyboardSpec},
 };
 
@@ -101,6 +102,16 @@ impl Default for Micromoog {
     }
 }
 
+impl Gate for Micromoog {
+    fn gate_state(&self) -> GateState {
+        if self.state.activated_notes.is_empty() {
+            GateState::Low
+        } else {
+            GateState::High
+        }
+    }
+}
+
 impl Keyboard for Micromoog {
     fn get_voltage(&self) -> f32 {
         let nth_key = self.state.current_note as u8 - *self.playable_notes().start() as u8;
@@ -177,7 +188,6 @@ impl Midi for Micromoog {
 
         Instructions {
             keyboard_voltage: self.keyboard_voltage(),
-            note_on: !self.state.activated_notes.is_empty(),
         }
     }
 }
