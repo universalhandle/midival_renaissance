@@ -16,25 +16,22 @@ impl Default for Instrument {
     }
 }
 
-/// Somewhat redundant with State; need to consolidate
-pub struct Instructions {
-    keyboard_voltage: u16,
-}
-
-impl Instructions {
-    pub fn keyboard_voltage(&self) -> u16 {
-        self.keyboard_voltage
-    }
-}
-
 /// A trait for processing MIDI messages.
 ///
 /// Because not all MIDI messages have an obvious immediate expression (e.g., BPM) and because sometimes multiple messages are received at once
 /// (e.g., when a chord is played), the processing of input and its expression are separate.
 #[enum_dispatch(Instrument)]
 pub trait Midi {
+    /// Sets the _calculated_ properties of state (based on both MIDI input and configuration).
+    ///
+    /// Whereas [`receive_midi()`](`Self::receive_midi()`) straightforwardly incorporates data from received messages into state, `compute_state`
+    /// updates those properties which are a little less immediate or which must be calculated. Notably, this allows the
+    /// instrument to receive a chord in its entirety, and moreover to consult configurations such as note priorty, before setting
+    /// the note to be played.
+    fn compute_state(&mut self);
+
     /// Updates internal state given a single MIDI message.
-    fn process_midi(&mut self, msg: MidiMessage) -> ();
+    fn receive_midi(&mut self, msg: MidiMessage) -> ();
 
     /// Updates internal state given one or more MIDI messages.
     fn process_usb_data(&mut self, data: &[u8]) {
@@ -45,17 +42,11 @@ pub trait Midi {
             // wouldn't want to crash the device because some controller has a bug...
             let (msg, unprocessed_bytes) = parse_usb_midi_packets(data).unwrap();
             bytes = unprocessed_bytes;
-            self.process_midi(msg);
+            self.receive_midi(msg);
         }
-    }
 
-    /// Expresses the current state of the implementor.
-    ///
-    /// This is mutable to allow for last-second processing. For example, when multiple keys are depressed, the note priority setting
-    /// becomes important. If there is a glide setting as well, it is more appropriate to calculate the current note, the last note, etc.,
-    /// as the notes are performed rather than as they are received. I'm feeling this out as I go; it may be feasible/desirable to
-    /// separate these concerns later.
-    fn voice(&mut self) -> Instructions;
+        self.compute_state();
+    }
 }
 
 /// Attempts to construct a MIDI message from data, four bytes at a time.

@@ -10,7 +10,7 @@ use core::fmt;
 
 use crate::{
     instrument::{Instrument, Midi},
-    io::gate::Gate,
+    io::{control_voltage::ControlVoltage, gate::Gate},
 };
 use defmt::{panic, *};
 use embassy_executor::Spawner;
@@ -174,6 +174,25 @@ impl From<EndpointError> for Disconnected {
     }
 }
 
+/// Helper function to convert the voltage required for an instrument to play a specific note to a <abbr name="digital-to-analog converter">DAC</abbr> value.
+///
+/// There's an uncomfortable amount of hardcoding here. Ideally we could do without it, but, if not, this is the most appropriate place for it, as this is
+/// where all the hardware-specific code goes.
+fn voltage_to_dac_value(voltage: f32) -> Value {
+    Value::Bit12Right(
+        (voltage
+            // This is the reference voltage 3.333333; TODO: this should not be hardcoded, as reference voltages may vary
+            / (10.0 / 3.0)
+            // The calculation above gives the percentage of the reference voltage; below we scale it to 12 bits; this
+            // also shouldn't be hardcoded, as it's specific to this particular DAC (other hardware might have different
+            // resolutions)
+            * 4095.0)
+            // Casting to u16 serves as a quick and dirty rounding. The DAC resolution is high enough I don't think this will
+            // matter.
+            as u16,
+    )
+}
+
 async fn process_usb_data<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
     dac: &mut DacCh1<'d, DAC1, Async>,
@@ -183,15 +202,18 @@ async fn process_usb_data<'d, T: usb::Instance + 'd>(
     let mut buf = [0; 64];
     loop {
         let n = class.read_packet(&mut buf).await?;
-        let instructions = {
-            let mut instr = instrument.lock().await;
-            instr.process_usb_data(&buf[..n]);
-            instr.voice()
-        };
-        info!("Sending {} to DAC", instructions.keyboard_voltage());
-        dac.set(Value::Bit12Right(instructions.keyboard_voltage()));
+        let mut instr = instrument.lock().await;
+        instr.process_usb_data(&buf[..n]);
 
-        if instrument.lock().await.gate_is_high() {
+        let voltage = instr.current_note_to_voltage();
+        let dac_value = voltage_to_dac_value(voltage);
+        info!(
+            "Sending {} to DAC to achieve a voltage of {}",
+            dac_value, voltage
+        );
+        dac.set(dac_value);
+
+        if instr.gate_is_high() {
             info!("Note is on");
             switch_trigger.set_high();
         } else {

@@ -6,7 +6,7 @@ use wmidi::{MidiMessage, Note};
 use crate::{
     activated_notes::ActivatedNotes,
     configuration::{EnvelopeTrigger, NotePriority},
-    instrument::{Instructions, Midi},
+    instrument::Midi,
     io::{
         control_voltage::ControlVoltage,
         gate::{Gate, GateState},
@@ -75,20 +75,6 @@ impl Micromoog {
             state: State::default(),
         }
     }
-
-    /// this belongs in some trait TBD; this isn't a concern of the Micromoog per se but really of any instrument which has a keyboard
-    fn keyboard_voltage(&self) -> u16 {
-        (self.current_note_to_voltage()
-            // This is the reference voltage 3.333333; TODO: this should not be hardcoded, as reference voltages may vary
-            / (10.0 / 3.0)
-            // The calculation above gives the percentage of the reference voltage; below we scale it to 12 bits; this
-            // also shouldn't be hardcoded, as it's specific to this particular DAC (other hardware might have different
-            // resolutions)
-            * 4095.0)
-            // Casting to u16 serves as a quick and dirty rounding. The DAC resolution is high enough I don't think this will
-            // matter.
-            as u16
-    }
 }
 
 impl Default for Micromoog {
@@ -123,7 +109,17 @@ impl ControlVoltage for Micromoog {
 }
 
 impl Midi for Micromoog {
-    fn process_midi(&mut self, msg: MidiMessage) -> () {
+    fn compute_state(&mut self) {
+        self.state.current_note = match self.settings.note_priority {
+            NotePriority::First => self.state.activated_notes.first(),
+            NotePriority::Last => self.state.activated_notes.last(),
+            NotePriority::High => self.state.activated_notes.highest(),
+            NotePriority::Low => self.state.activated_notes.lowest(),
+        }
+        .unwrap_or(self.state.current_note);
+    }
+
+    fn receive_midi(&mut self, msg: MidiMessage) -> () {
         match msg {
             MidiMessage::NoteOff(channel, note, velocity) => {
                 if self.can_voice(&note) {
@@ -170,19 +166,5 @@ impl Midi for Micromoog {
                 );
             }
         };
-    }
-
-    fn voice(&mut self) -> Instructions {
-        self.state.current_note = match self.settings.note_priority {
-            NotePriority::First => self.state.activated_notes.first(),
-            NotePriority::Last => self.state.activated_notes.last(),
-            NotePriority::High => self.state.activated_notes.highest(),
-            NotePriority::Low => self.state.activated_notes.lowest(),
-        }
-        .unwrap_or(self.state.current_note);
-
-        Instructions {
-            keyboard_voltage: self.keyboard_voltage(),
-        }
     }
 }
