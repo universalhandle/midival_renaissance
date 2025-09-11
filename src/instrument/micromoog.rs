@@ -6,10 +6,10 @@ use wmidi::{MidiMessage, Note};
 use crate::{
     activated_notes::ActivatedNotes,
     configuration::{EnvelopeTrigger, NotePriority},
-    instrument::Midi,
     io::{
         control_voltage::ControlVoltage,
         gate::{Gate, GateState},
+        midi::Midi,
     },
 };
 

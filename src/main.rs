@@ -9,8 +9,8 @@ mod io;
 use core::fmt;
 
 use crate::{
-    instrument::{Instrument, Midi},
-    io::{control_voltage::ControlVoltage, gate::Gate},
+    instrument::Instrument,
+    io::{control_voltage::ControlVoltage, gate::Gate, midi::Midi},
 };
 use defmt::{panic, *};
 use embassy_executor::Spawner;
