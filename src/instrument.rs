@@ -16,5 +16,6 @@ impl Default for Instrument {
 
 /// Evidently, the `enum_display` macro needs to have Instrument and all of the types used by its variant constructors in scope,
 /// otherwise it won't compile. See https://gitlab.com/antonok/enum_dispatch/-/issues/81.
+#[allow(dead_code)]
 #[enum_dispatch(Instrument)]
 trait EnumDispatchHack {}
