@@ -1,3 +1,4 @@
+use crate::configuration::{Config, InstrumentConfig};
 use enum_dispatch::enum_dispatch;
 use micromoog::Micromoog;
 

@@ -9,6 +9,7 @@ mod io;
 use core::fmt;
 
 use crate::{
+    configuration::{Config as _, CycleConfig},
     instrument::Instrument,
     io::{control_voltage::ControlVoltage, gate::Gate, midi::Midi},
 };
@@ -17,9 +18,10 @@ use embassy_executor::Spawner;
 use embassy_stm32::{
     Config, bind_interrupts,
     dac::{Dac, DacCh1, DacCh2, Value},
-    gpio::{Level, Output, Speed},
+    exti::ExtiInput,
+    gpio::{Level, Output, Pull, Speed},
     mode::Async,
-    peripherals::{self, DAC1},
+    peripherals::{self, DAC1, EXTI13},
     time::Hertz,
     usb,
 };
@@ -71,6 +73,12 @@ async fn main(spawner: Spawner) {
 
     static INSTRUMENT: StaticCell<InstrumentAsyncMutex> = StaticCell::new();
     let instrument = INSTRUMENT.init(mutex::Mutex::new(Instrument::default()));
+
+    let button = ExtiInput::new(p.PC13, p.EXTI13, Pull::None);
+    unwrap!(spawner.spawn(note_priority_input_task(button, instrument)));
+
+    let red_led = Output::new(p.PB14, Level::Low, Speed::Low);
+    unwrap!(spawner.spawn(note_priority_display_task(red_led, instrument)));
 
     // Create the driver, from the HAL.
     static ENDPOINT_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
@@ -141,6 +149,48 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(usb_task(usb)));
     unwrap!(spawner.spawn(midi_task(class, dac_ch1, switch_trigger, instrument)));
     unwrap!(spawner.spawn(tbd_task(dac_ch2)));
+}
+
+#[embassy_executor::task]
+async fn note_priority_input_task(
+    mut button: ExtiInput<'static>,
+    instrument: &'static InstrumentAsyncMutex,
+) -> ! {
+    loop {
+        button.wait_for_rising_edge().await;
+        let mut instr = instrument.lock().await;
+        let note_priority = instr.config().note_priority;
+        instr.config_mut().note_priority = note_priority.cycle();
+    }
+}
+
+/// Provides a quick and dirty status indicator for user-configurable items.
+///
+/// Each cycle is divided in half. The LED remains dark for one half. For the other, the
+/// LED lights up N times (where N is one more than the index of the selected item).
+/// Of course this this won't scale well, but it suits our purposes for now.
+#[embassy_executor::task]
+async fn note_priority_display_task(
+    mut led: Output<'static>,
+    instrument: &'static InstrumentAsyncMutex,
+) -> ! {
+    const BLINK_SLEEP_MS: u64 = 1_000_000;
+
+    loop {
+        led.set_low();
+        Timer::after_micros(BLINK_SLEEP_MS).await;
+
+        // since the index starts with 0, 1 is added or else the LED wouldn't blink at all for the "first" (i.e., zeroth) configuration option
+        let blink_cnt = (instrument.lock().await.config().note_priority as u8).saturating_add(1);
+        // mult by two to account for the "off" periods, sub 1 so the LED always starts and ends lit
+        let animation_frames = blink_cnt * 2 - 1;
+        let mut counter = animation_frames;
+        while counter > 0 {
+            led.toggle();
+            Timer::after_micros(BLINK_SLEEP_MS / u64::from(animation_frames)).await;
+            counter -= 1;
+        }
+    }
 }
 
 #[embassy_executor::task]

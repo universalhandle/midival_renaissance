@@ -5,47 +5,15 @@ use wmidi::{MidiMessage, Note};
 
 use crate::{
     activated_notes::ActivatedNotes,
-    configuration::{EnvelopeTrigger, NotePriority},
+    configuration::{
+        Config, EnvelopeTrigger, InputMode, InstrumentConfig, NotePriority,
+    },
     io::{
         control_voltage::ControlVoltage,
         gate::{Gate, GateState},
         midi::Midi,
     },
 };
-
-#[derive(Debug)]
-enum InputMode {
-    /// Notes are played via the keyboard module, as though a performer were playing the instrument directly, respecting
-    /// the synth's octave, frequency, doubling, and fine tune controls. The synth's glide setting is overridden, as this
-    /// is part of the keyboard module. MIDI input signals which keys are struck, indirectly determining pitch (based on the
-    /// aforementioned hardware setting) and filter cutoff. (The filter cutoff tracks the keyboard to various degrees depending
-    /// on the filter mode setting.)
-    Keyboard,
-    /// TODO
-    Oscillator,
-}
-
-impl Default for InputMode {
-    fn default() -> Self {
-        Self::Keyboard
-    }
-}
-
-pub struct Settings {
-    envelope_trigger: EnvelopeTrigger,
-    input_mode: InputMode,
-    note_priority: NotePriority,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            envelope_trigger: EnvelopeTrigger::BreakEnd,
-            input_mode: InputMode::default(),
-            note_priority: NotePriority::Low,
-        }
-    }
-}
 
 struct State {
     activated_notes: ActivatedNotes,
@@ -64,14 +32,14 @@ impl Default for State {
 // maybe the essential configs are type parameters, so that we impl TraitX
 // differently for Micromoog<InputMode=Keyboard> vs Micromoog<InputMode=Oscillator>?
 pub struct Micromoog {
-    settings: Settings,
+    config: InstrumentConfig,
     state: State,
 }
 
 impl Micromoog {
-    fn new(settings: Settings) -> Self {
+    fn new(config: InstrumentConfig) -> Self {
         Self {
-            settings,
+            config,
             state: State::default(),
         }
     }
@@ -79,7 +47,21 @@ impl Micromoog {
 
 impl Default for Micromoog {
     fn default() -> Self {
-        Self::new(Settings::default())
+        Self::new(InstrumentConfig {
+            envelope_trigger: EnvelopeTrigger::BreakEnd,
+            input_mode: InputMode::default(),
+            note_priority: NotePriority::Low,
+        })
+    }
+}
+
+impl Config for Micromoog {
+    fn config(&self) -> &InstrumentConfig {
+        &self.config
+    }
+
+    fn config_mut(&mut self) -> &mut InstrumentConfig {
+        &mut self.config
     }
 }
 
@@ -110,7 +92,7 @@ impl ControlVoltage for Micromoog {
 
 impl Midi for Micromoog {
     fn compute_state(&mut self) {
-        self.state.current_note = match self.settings.note_priority {
+        self.state.current_note = match self.config.note_priority {
             NotePriority::First => self.state.activated_notes.first(),
             NotePriority::Last => self.state.activated_notes.last(),
             NotePriority::High => self.state.activated_notes.highest(),
