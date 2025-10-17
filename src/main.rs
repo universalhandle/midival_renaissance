@@ -11,7 +11,11 @@ use core::fmt;
 use crate::{
     configuration::{Config as _, CycleConfig},
     instrument::Instrument,
-    io::{control_voltage::ControlVoltage, gate::Gate, midi::Midi},
+    io::{
+        control_voltage::ControlVoltage,
+        gate::Gate,
+        midi::{Midi, bytes_to_midi_message_iterator},
+    },
 };
 use defmt::{panic, *};
 use embassy_executor::Spawner;
@@ -253,7 +257,12 @@ async fn process_usb_data<'d, T: usb::Instance + 'd>(
     loop {
         let n = class.read_packet(&mut buf).await?;
         let mut instr = instrument.lock().await;
-        instr.process_usb_data(&buf[..n]);
+
+        bytes_to_midi_message_iterator(&buf[..n]).for_each(|midi_msg| {
+            instr.receive_midi(midi_msg);
+        });
+
+        instr.compute_state();
 
         let voltage = instr.current_note_to_voltage();
         let dac_value = voltage_to_dac_value(voltage);

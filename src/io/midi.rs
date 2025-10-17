@@ -1,7 +1,7 @@
 use crate::instrument::Instrument;
 use defmt::error;
 use enum_dispatch::enum_dispatch;
-use wmidi::{Error, MidiMessage};
+use wmidi::MidiMessage;
 
 /// A trait for processing MIDI messages.
 ///
@@ -19,41 +19,20 @@ pub trait Midi {
 
     /// Updates internal state given a single MIDI message.
     fn receive_midi(&mut self, msg: MidiMessage) -> ();
-
-    /// Updates internal state given one or more MIDI messages.
-    fn process_usb_data(&mut self, data: &[u8]) {
-        let mut bytes = Some(data);
-
-        while let Some(data) = bytes {
-            // unwrapping for now, but need to think about what to do in case the device receives unparseable MIDI;
-            // wouldn't want to crash the device because some controller has a bug...
-            let (msg, unprocessed_bytes) = parse_usb_midi_packets(data).unwrap();
-            bytes = unprocessed_bytes;
-            self.receive_midi(msg);
-        }
-
-        self.compute_state();
-    }
 }
 
-/// Attempts to construct a MIDI message from data, four bytes at a time.
+/// Construct MIDI messages from data assumed to be USB-MIDI Event Packets.
 ///
-/// Returns the MidiMessage result as well as any unprocessed bytes. As incoming data sometimes contains multiple messages
-// (i.e., when a chord is played), returning the unprocessed bytes allows using this function in a loop to make additional passes.
-fn parse_usb_midi_packets(data: &[u8]) -> Result<(MidiMessage<'_>, Option<&[u8]>), Error> {
-    if data.len() < 4 {
-        error!("USB-MIDI Event Packets must always be 32 bits long");
-        Err(Error::NotEnoughBytes)
-    } else {
-        // the zeroth bit is intentionally ignored because the Packet Header is not of interest; it is the remaining
-        // three bits that contain the actual MIDI event
-        MidiMessage::from_bytes(&data[1..4]).and_then(|msg| {
-            let unprocessed_bytes = if data.len() > 4 {
-                Some(&data[4..])
-            } else {
-                None
-            };
-            Ok((msg, unprocessed_bytes))
-        })
-    }
+/// Given bytes, returns an iterator over the MIDI messages therein.
+pub fn bytes_to_midi_message_iterator(data: &[u8]) -> impl Iterator<Item = MidiMessage> {
+    data.chunks(4).filter_map(|potential_packet| {
+        if potential_packet.len() != 4 {
+            error!("USB-MIDI Event Packets must always be 32 bits long");
+            None
+        } else {
+            // the zeroth bit is intentionally ignored because the Packet Header is not of interest; the remaining
+            // three bits contain the actual MIDI event
+            MidiMessage::from_bytes(&potential_packet[1..]).ok()
+        }
+    })
 }
