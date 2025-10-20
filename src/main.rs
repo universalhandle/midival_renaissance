@@ -211,6 +211,7 @@ async fn note_priority_input_task(
         let mut instr = instrument.lock().await;
         let note_priority = instr.config().note_priority;
         instr.config_mut().note_priority = note_priority.cycle();
+        OUTPUT_UPDATE_REQUIRED.signal(true);
     }
 }
 
