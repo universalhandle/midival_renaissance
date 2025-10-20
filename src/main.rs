@@ -14,7 +14,7 @@ use crate::{
     io::{
         control_voltage::ControlVoltage,
         gate::Gate,
-        midi::{Midi, bytes_to_midi_message_iterator},
+        midi::{Midi, bytes_to_midi_message_iterator, is_note_event},
     },
 };
 use defmt::{panic, *};
@@ -301,11 +301,15 @@ async fn process_usb_data<'d, T: usb::Instance + 'd>(
         let n = class.read_packet(&mut buf).await?;
         let mut instr = instrument.lock().await;
 
+        let mut received_note_event = false;
         bytes_to_midi_message_iterator(&buf[..n]).for_each(|midi_msg| {
+            received_note_event |= is_note_event(&midi_msg);
             instr.receive_midi(midi_msg);
         });
 
-        OUTPUT_UPDATE_REQUIRED.signal(true);
+        if received_note_event {
+            OUTPUT_UPDATE_REQUIRED.signal(true);
+        }
     }
 }
 

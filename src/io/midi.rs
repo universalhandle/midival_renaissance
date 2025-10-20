@@ -36,3 +36,10 @@ pub fn bytes_to_midi_message_iterator(data: &[u8]) -> impl Iterator<Item = MidiM
         }
     })
 }
+
+pub fn is_note_event(msg: &MidiMessage) -> bool {
+    match msg {
+        MidiMessage::NoteOff(..) | MidiMessage::NoteOn(..) => true,
+        _ => false,
+    }
+}
