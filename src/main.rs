@@ -29,7 +29,7 @@ use embassy_stm32::{
     time::Hertz,
     usb,
 };
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex, signal::Signal};
 use embassy_time::Timer;
 use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
 use static_cell::StaticCell;
@@ -42,6 +42,8 @@ bind_interrupts!(struct Irqs {
 
 type InstrumentAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, Instrument>;
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
+
+static OUTPUT_UPDATE_REQUIRED: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -151,8 +153,52 @@ async fn main(spawner: Spawner) {
     let switch_trigger = Output::new(p.PG0, Level::Low, Speed::Low);
 
     unwrap!(spawner.spawn(usb_task(usb)));
-    unwrap!(spawner.spawn(midi_task(class, dac_ch1, switch_trigger, instrument)));
+    unwrap!(spawner.spawn(midi_task(class, instrument)));
+    unwrap!(spawner.spawn(voice_task(dac_ch1, switch_trigger, instrument)));
     unwrap!(spawner.spawn(tbd_task(dac_ch2)));
+}
+
+/// Task responsible for voicing, i.e., should the instrument play a note, and if so which?
+#[embassy_executor::task]
+async fn voice_task(
+    mut dac: DacCh1<'static, DAC1, Async>,
+    mut switch_trigger: Output<'static>,
+    instrument: &'static InstrumentAsyncMutex,
+) -> ! {
+    loop {
+        // The value doesn't really matter; we just need to know if "an event was raised." The actual state is read from elsewhere.
+        OUTPUT_UPDATE_REQUIRED.wait().await;
+        let mut instr = instrument.lock().await;
+
+        // There's a bit of inconsistency in approach here. On the one hand, I'm hesitant to expose values (e.g., the note to play)
+        // outside of the instrument, because I like the safety provided by knowing the instrument's note range/rejecting MIDI
+        // messages outside that range. (Perhaps I'm overly sensitive to (imagined?) edge cases where the externalizing the note
+        // results in the device sending harmful current in an attempt to play an out-of-range note.) On the other hand, I haven't
+        // decided how much the library code, with its fairly music-focused logic, needs to know about the hardware (i.e., the
+        // microprocessor and its peripherals). As a result, I end up gluing that all together here, perhaps awkwardly:
+        //
+        // - compute_state is just weird; if it must exist at all, it seems like it should be a private method; internally mutating
+        //   state, taking no input, and returning nothing... code smell
+        // - the aforementioned safety goes out the window the moment the note is converted to voltage; either I should bite the bullet and
+        //   allow these values to be returned from the object, or I should pass in some reference to the hardware peripherals
+        instr.compute_state();
+
+        let voltage = instr.current_note_to_voltage();
+        let dac_value = voltage_to_dac_value(voltage);
+        info!(
+            "Sending {} to DAC to achieve a voltage of {}",
+            dac_value, voltage
+        );
+        dac.set(dac_value);
+
+        if instr.gate_is_high() {
+            info!("Note is on");
+            switch_trigger.set_high();
+        } else {
+            info!("Note is off");
+            switch_trigger.set_low();
+        }
+    }
 }
 
 #[embassy_executor::task]
@@ -205,14 +251,12 @@ async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
 #[embassy_executor::task]
 async fn midi_task(
     mut class: MidiClass<'static, UsbDriver>,
-    mut dac: DacCh1<'static, DAC1, Async>,
-    mut switch_trigger: Output<'static>,
     instrument: &'static InstrumentAsyncMutex,
 ) -> ! {
     loop {
         class.wait_connection().await;
         info!("Connected");
-        let _ = process_usb_data(&mut class, &mut dac, &mut switch_trigger, instrument).await;
+        let _ = process_usb_data(&mut class, instrument).await;
         info!("Disconnected");
     }
 }
@@ -249,8 +293,6 @@ fn voltage_to_dac_value(voltage: f32) -> Value {
 
 async fn process_usb_data<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
-    dac: &mut DacCh1<'d, DAC1, Async>,
-    switch_trigger: &mut Output<'d>,
     instrument: &'static InstrumentAsyncMutex,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
@@ -262,23 +304,7 @@ async fn process_usb_data<'d, T: usb::Instance + 'd>(
             instr.receive_midi(midi_msg);
         });
 
-        instr.compute_state();
-
-        let voltage = instr.current_note_to_voltage();
-        let dac_value = voltage_to_dac_value(voltage);
-        info!(
-            "Sending {} to DAC to achieve a voltage of {}",
-            dac_value, voltage
-        );
-        dac.set(dac_value);
-
-        if instr.gate_is_high() {
-            info!("Note is on");
-            switch_trigger.set_high();
-        } else {
-            info!("Note is off");
-            switch_trigger.set_low();
-        }
+        OUTPUT_UPDATE_REQUIRED.signal(true);
     }
 }
 
