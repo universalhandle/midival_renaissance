@@ -1,3 +1,4 @@
+use embassy_time::Duration;
 use enum_dispatch::enum_dispatch;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
@@ -24,6 +25,17 @@ pub trait CycleConfig {
 pub struct InstrumentConfig {
     pub envelope_trigger: EnvelopeTrigger,
     pub input_mode: InputMode,
+    /// This config can be thought of enabling a "chord cleanup" feature. It can be used to insert a slight delay between MIDI
+    /// input and eletrical output to account for human imprecision.
+    ///
+    /// For example, it stands to reason that when playing chords on a controller with the [note_priority][`Self::note_priority`]
+    /// set to low, the MIDIval Renaissance/Micromoog would be expected to provide "bass lines for free." Inserting a delay enables
+    /// "close enough" timing for all the keypresses associated with the performance of a chord so that the Micromoog doesn't play
+    /// the third or the fifth for a split second on occasions when those notes land before the root.
+    ///
+    /// As the chord cleanup feature batches and "swallows" notes by design, users will likely want to disable it if they intend to
+    /// drive the attached synthesizer from a sequencer or MIDI file. Its intended use case is for live-playing through a controller.
+    pub note_embargo: NoteEmbargo,
     pub note_priority: NotePriority,
 }
 
@@ -33,6 +45,35 @@ pub trait Config {
     fn config(&self) -> &InstrumentConfig;
     fn config_mut(&mut self) -> &mut InstrumentConfig;
 }
+
+/// How much delay to insert between MIDI input and electrical output to enable "chord cleanup" functionality, expressed as divisions of a note.
+///
+/// Messages received within this interval are effectively batched rather than processed one at a time. See [`InstrumentConfig::note_embargo`].
+#[derive(Debug, Clone, Copy, ToPrimitive, FromPrimitive, PartialEq)]
+pub enum NoteEmbargo {
+    /// Effectively disables the "chord cleanup" feature.
+    None,
+    /// Introduces a margin of error of one 32nd note for the performer.
+    ThirtySecondNote,
+}
+
+impl NoteEmbargo {
+    /// Returns the duration of the note embargo in a format compatible with Embassy's timekeeping API.
+    ///
+    /// In some future, this will be tied to BPM (beats per minute). For now, BPM is assumed to be 120.
+    pub fn duration(&self) -> Duration {
+        match self {
+            Self::None => Duration::from_micros(0),
+            Self::ThirtySecondNote => Duration::from_micros(62500),
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        *self != Self::None
+    }
+}
+
+impl CycleConfig for NoteEmbargo {}
 
 /// Determines which note(s) sound(s) when more notes than the instrument can voice simultaneously are received.
 ///

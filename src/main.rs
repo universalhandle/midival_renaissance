@@ -30,7 +30,7 @@ use embassy_stm32::{
     usb,
 };
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex, signal::Signal};
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
 use static_cell::StaticCell;
 
@@ -43,7 +43,10 @@ bind_interrupts!(struct Irqs {
 type InstrumentAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, Instrument>;
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
-static OUTPUT_UPDATE_REQUIRED: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+/// A signal which indicates that something has changed which may affect how (or whether) the synthesizer sounds.
+/// Wraps an [`Instant`] (i.e., the request time), for use in batching close-together messages. See [`NoteEmbargo`]
+/// for additional information about the "chord cleanup" functionality.
+static OUTPUT_UPDATE_REQUEST: Signal<CriticalSectionRawMutex, Instant> = Signal::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -85,6 +88,10 @@ async fn main(spawner: Spawner) {
 
     let red_led = Output::new(p.PB14, Level::Low, Speed::Low);
     unwrap!(spawner.spawn(note_priority_display_task(red_led, instrument)));
+
+    let toggle = ExtiInput::new(p.PD1, p.EXTI1, Pull::Up);
+    let blue_led = Output::new(p.PB7, Level::Low, Speed::Low);
+    unwrap!(spawner.spawn(note_event_embargo_input_task(toggle, blue_led, instrument)));
 
     // Create the driver, from the HAL.
     static ENDPOINT_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
@@ -159,26 +166,53 @@ async fn main(spawner: Spawner) {
 }
 
 /// Task responsible for voicing, i.e., should the instrument play a note, and if so which?
+///
+/// This task is started each time the [`OUTPUT_UPDATE_REQUEST`] signal is sent. However, if the "chord cleanup" feature is enabled
+/// (see [`NoteEmbargo`]), it may result in a no-op while the note events are batched to determine what the behavior should be according
+/// to the [`NotePriority`][`configuration::NotePriority`] policy.
 #[embassy_executor::task]
 async fn voice_task(
     mut dac: DacCh1<'static, DAC1, Async>,
     mut switch_trigger: Output<'static>,
     instrument: &'static InstrumentAsyncMutex,
 ) -> ! {
+    let mut embargo_until = Instant::now();
     loop {
-        // The value doesn't really matter; we just need to know if "an event was raised." The actual state is read from elsewhere.
-        OUTPUT_UPDATE_REQUIRED.wait().await;
+        let request_instant = OUTPUT_UPDATE_REQUEST.wait().await;
+        let note_embargo = instrument.lock().await.config().note_embargo;
+
+        // When the note embargo duration is nonzero (i.e., the "chord cleanup" feature is enabled), the first note event that occurs outside of an embargo
+        // period starts a timer. This allows the application to file away the content of the first event—this occurs elsewhere—and evaluate it moments later in
+        // the context of additional events that might arrive (i.e., the other notes in the chord) as well as the [`NotePriority`][`configuration::NotePriority`]
+        // configuration. When the condition below is triggered, it means that subsequent note events have indeed been received. However, their request(s) to
+        // voice the instrument can be ignored (hence the short-circuiting of the loop below) because their content will be evaluated at the end of the
+        // embargo period. (If the chord cleanup feature is disabled, `embargo_until` ceases to be updated and will always be in the past, so this block will
+        // not be entered.)
+        if request_instant < embargo_until {
+            continue;
+        }
+
+        // This is where the timer is set. Again, only the first note in a series reaches this block, as the subsequent ones would have been short-circuited above.
+        // (If chord cleanup is disabled, this block is skipped.)
+        if note_embargo.is_enabled() {
+            embargo_until = request_instant + note_embargo.duration();
+            Timer::at(embargo_until).await;
+        }
+
         let mut instr = instrument.lock().await;
 
+        // These comments have nothing to do with the chord cleanup feature.
+        //
         // There's a bit of inconsistency in approach here. On the one hand, I'm hesitant to expose values (e.g., the note to play)
-        // outside of the instrument, because I like the safety provided by knowing the instrument's note range/rejecting MIDI
-        // messages outside that range. (Perhaps I'm overly sensitive to (imagined?) edge cases where the externalizing the note
-        // results in the device sending harmful current in an attempt to play an out-of-range note.) On the other hand, I haven't
+        // outside of the instrument, because I like the safety provided by knowing the instrument's note range and by the ability to
+        // reject MIDI messages outside that range. (Perhaps I'm overly sensitive to (imagined?) edge cases where externalizing the
+        // note results in the device sending harmful current in an attempt to play an out-of-range note, prematurely optimizing for
+        // the possibility that I decide to extend this device to support other synthesizers.) On the other hand, I haven't
         // decided how much the library code, with its fairly music-focused logic, needs to know about the hardware (i.e., the
         // microprocessor and its peripherals). As a result, I end up gluing that all together here, perhaps awkwardly:
         //
         // - compute_state is just weird; if it must exist at all, it seems like it should be a private method; internally mutating
-        //   state, taking no input, and returning nothing... code smell
+        //   state, taking no input, and returning nothing... smells
         // - the aforementioned safety goes out the window the moment the note is converted to voltage; either I should bite the bullet and
         //   allow these values to be returned from the object, or I should pass in some reference to the hardware peripherals
         instr.compute_state();
@@ -211,7 +245,36 @@ async fn note_priority_input_task(
         let mut instr = instrument.lock().await;
         let note_priority = instr.config().note_priority;
         instr.config_mut().note_priority = note_priority.cycle();
-        OUTPUT_UPDATE_REQUIRED.signal(true);
+        OUTPUT_UPDATE_REQUEST.signal(Instant::now());
+    }
+}
+
+/// Provisional input and status indicator for the "chord cleanup" feature.
+///
+/// Presently this has two states: off (no LED) and 32nd note (solid blue LED). These represent the batching delay period for
+/// the "chord cleanup" feature (more info: [`NoteEmbargo`]). The input and display are provisional because I only have pushbutton
+/// inputs at present. Should it turn out that more states are necessary, a fixed-position knob seems more appropriate. If not, a switch
+/// seems preferable to a pushbutton.
+#[embassy_executor::task]
+async fn note_event_embargo_input_task(
+    mut button: ExtiInput<'static>,
+    mut led: Output<'static>,
+    instrument: &'static InstrumentAsyncMutex,
+) -> ! {
+    loop {
+        button.wait_for_rising_edge().await;
+        let mut instr = instrument.lock().await;
+        let new_note_embargo = instr.config().note_embargo.cycle();
+        instr.config_mut().note_embargo = new_note_embargo;
+
+        match new_note_embargo {
+            configuration::NoteEmbargo::None => {
+                led.set_low();
+            }
+            configuration::NoteEmbargo::ThirtySecondNote => {
+                led.set_high();
+            }
+        }
     }
 }
 
@@ -308,7 +371,7 @@ async fn process_usb_data<'d, T: usb::Instance + 'd>(
         });
 
         if received_note_event {
-            OUTPUT_UPDATE_REQUIRED.signal(true);
+            OUTPUT_UPDATE_REQUEST.signal(Instant::now());
         }
     }
 }

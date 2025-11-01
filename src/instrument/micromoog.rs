@@ -6,7 +6,7 @@ use wmidi::{MidiMessage, Note};
 use crate::{
     activated_notes::ActivatedNotes,
     configuration::{
-        Config, EnvelopeTrigger, InputMode, InstrumentConfig, NotePriority,
+        Config, EnvelopeTrigger, InputMode, InstrumentConfig, NoteEmbargo, NotePriority,
     },
     io::{
         control_voltage::ControlVoltage,
@@ -50,6 +50,7 @@ impl Default for Micromoog {
         Self::new(InstrumentConfig {
             envelope_trigger: EnvelopeTrigger::BreakEnd,
             input_mode: InputMode::default(),
+            note_embargo: NoteEmbargo::None,
             note_priority: NotePriority::Low,
         })
     }
