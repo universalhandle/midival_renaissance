@@ -6,8 +6,6 @@ mod configuration;
 mod instrument;
 mod io;
 
-use core::fmt;
-
 use crate::{
     configuration::{Config as _, CycleConfig},
     instrument::Instrument,
@@ -25,7 +23,7 @@ use embassy_stm32::{
     exti::ExtiInput,
     gpio::{Level, Output, Pull, Speed},
     mode::Async,
-    peripherals::{self, DAC1, EXTI13},
+    peripherals::{self, DAC1},
     time::Hertz,
     usb,
 };
