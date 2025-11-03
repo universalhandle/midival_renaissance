@@ -4,9 +4,6 @@ use enum_dispatch::enum_dispatch;
 use wmidi::MidiMessage;
 
 /// A trait for processing MIDI messages.
-///
-/// Because not all MIDI messages have an obvious immediate expression (e.g., BPM) and because sometimes multiple messages are received at once
-/// (e.g., when a chord is played), the processing of input and its expression are separate.
 #[enum_dispatch(Instrument)]
 pub trait Midi {
     /// Sets the _calculated_ properties of state (based on both MIDI input and configuration).
@@ -37,6 +34,7 @@ pub fn bytes_to_midi_message_iterator(data: &[u8]) -> impl Iterator<Item = MidiM
     })
 }
 
+/// Determine whether an event is a note event (as opposed, say, to a BPM event).
 pub fn is_note_event(msg: &MidiMessage) -> bool {
     match msg {
         MidiMessage::NoteOff(..) | MidiMessage::NoteOn(..) => true,

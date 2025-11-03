@@ -1,3 +1,18 @@
+//! MIDIval Renaissance is [Embassy](https://embassy.dev)-based firmware for a MIDI adapter targeting the
+//! [Micromoog Model 2090](https://en.wikipedia.org/wiki/Micromoog), a monophonic analog synthesizer produced
+//! by Moog Music from 1975 to 1979. The firmware runs on the [Nucleo-F767ZI development
+//! board](https://www.st.com/en/evaluation-tools/nucleo-f767zi.html), which is powered by an F7-series
+//! STM32 microcontroller.
+//!
+//! It works by translating MIDI messages into electrical signals compatible with the Moog Open System, which
+//! is essentially a flavor of [CV/gate](https://en.wikipedia.org/wiki/CV/gate). In addition to enabling the Micromoog
+//! to be controlled externally, the firmware seeks to extend the capabilities of the synthesizer by allowing the
+//! [`NotePriority`][`configuration::NotePriority`] to be configured, adding arpeggiation, providing BPM (beats per minute)
+//! context, and supporting keyboard expression such as aftertouch that the original hardware isn't equipped to handle.
+//! (Note: not all of these features are implemented yet.)
+//!
+//! For details about the hardware or how to use the device, see the `README`.
+
 #![no_std]
 #![no_main]
 
@@ -34,21 +49,24 @@ use static_cell::StaticCell;
 
 use {defmt_rtt as _, panic_probe as _};
 
-bind_interrupts!(struct Irqs {
-    OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
-});
+bind_interrupts!(
+    #[doc(hidden)]
+    struct Irqs {
+        OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
+    }
+);
 
 type InstrumentAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, Instrument>;
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
 /// A signal which indicates that something has changed which may affect how (or whether) the synthesizer sounds.
-/// Wraps an [`Instant`] (i.e., the request time), for use in batching close-together messages. See [`NoteEmbargo`]
-/// for additional information about the "chord cleanup" functionality.
+/// Wraps an [`Instant`] (i.e., the request time), for use in batching close-together messages. See
+/// [`NoteEmbargo`][configuration::NoteEmbargo] for additional information about the "chord cleanup" functionality.
 static OUTPUT_UPDATE_REQUEST: Signal<CriticalSectionRawMutex, Instant> = Signal::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    info!("Hello World!");
+    info!("Initializing MIDIval Renaissance");
 
     let mut config = Config::default();
     {
@@ -148,7 +166,7 @@ async fn main(spawner: Spawner) {
     // DMA: direct memory access controller
     let dac_ch1_dma = p.DMA1_CH5;
 
-    // I set up the second DAC channel but didn't use it
+    // the second DAC channel will provide as-yet unimplemented input to the Micromoog (perhaps to OSC)
     let dac_ch2_out = p.PA5;
     let dac_ch2_dma = p.DMA1_CH6;
 
@@ -166,8 +184,8 @@ async fn main(spawner: Spawner) {
 /// Task responsible for voicing, i.e., should the instrument play a note, and if so which?
 ///
 /// This task is started each time the [`OUTPUT_UPDATE_REQUEST`] signal is sent. However, if the "chord cleanup" feature is enabled
-/// (see [`NoteEmbargo`]), it may result in a no-op while the note events are batched to determine what the behavior should be according
-/// to the [`NotePriority`][`configuration::NotePriority`] policy.
+/// (see [`NoteEmbargo`][configuration::NoteEmbargo]), it may result in a no-op while the note events are batched to determine what
+/// the behavior should be according to the [`NotePriority`][`configuration::NotePriority`] policy.
 #[embassy_executor::task]
 async fn voice_task(
     mut dac: DacCh1<'static, DAC1, Async>,
@@ -233,6 +251,7 @@ async fn voice_task(
     }
 }
 
+/// Handles button presses, cycling through the [`NotePriority`][`configuration::NotePriority`] configurations.
 #[embassy_executor::task]
 async fn note_priority_input_task(
     mut button: ExtiInput<'static>,
@@ -250,9 +269,9 @@ async fn note_priority_input_task(
 /// Provisional input and status indicator for the "chord cleanup" feature.
 ///
 /// Presently this has two states: off (no LED) and 32nd note (solid blue LED). These represent the batching delay period for
-/// the "chord cleanup" feature (more info: [`NoteEmbargo`]). The input and display are provisional because I only have pushbutton
-/// inputs at present. Should it turn out that more states are necessary, a fixed-position knob seems more appropriate. If not, a switch
-/// seems preferable to a pushbutton.
+/// the "chord cleanup" feature (more info: [`NoteEmbargo`][configuration::NoteEmbargo]). The input and display are provisional
+/// because I only have pushbutton inputs at present. Should it turn out that more states are necessary, a selector switch seems
+/// more appropriate. If not, a toggle or slider switch seems preferable to a pushbutton.
 #[embassy_executor::task]
 async fn note_event_embargo_input_task(
     mut button: ExtiInput<'static>,
@@ -276,7 +295,7 @@ async fn note_event_embargo_input_task(
     }
 }
 
-/// Provides a quick and dirty status indicator for user-configurable items.
+/// Provides a quick and dirty status indicator for user-configurable [`NotePriority`][`configuration::NotePriority`].
 ///
 /// Each cycle is divided in half. The LED remains dark for one half. For the other, the
 /// LED lights up N times (where N is one more than the index of the selected item).
@@ -317,20 +336,9 @@ async fn midi_task(
 ) -> ! {
     loop {
         class.wait_connection().await;
-        info!("Connected");
+        info!("USB connected");
         let _ = process_usb_data(&mut class, instrument).await;
-        info!("Disconnected");
-    }
-}
-
-struct Disconnected {}
-
-impl From<EndpointError> for Disconnected {
-    fn from(val: EndpointError) -> Self {
-        match val {
-            EndpointError::BufferOverflow => panic!("Buffer overflow"),
-            EndpointError::Disabled => Disconnected {},
-        }
+        info!("USB disconnected");
     }
 }
 
@@ -353,6 +361,21 @@ fn voltage_to_dac_value(voltage: f32) -> Value {
     )
 }
 
+#[doc(hidden)]
+struct Disconnected {}
+
+impl From<EndpointError> for Disconnected {
+    fn from(val: EndpointError) -> Self {
+        match val {
+            EndpointError::BufferOverflow => panic!("Buffer overflow"),
+            EndpointError::Disabled => Disconnected {},
+        }
+    }
+}
+
+/// Helper function which interprets data received over USB.
+///
+/// Extracts MIDI from bytes, hands off events to the instrument for handling, and calls for voicing update if appropriate.
 async fn process_usb_data<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
     instrument: &'static InstrumentAsyncMutex,
@@ -375,12 +398,11 @@ async fn process_usb_data<'d, T: usb::Instance + 'd>(
 }
 
 /// Placeholder task to ensure both DAC channels are used, preventing the DAC itself from being disabled;
-/// see https://github.com/embassy-rs/embassy/issues/4577.
+/// see <https://github.com/embassy-rs/embassy/issues/4577>.
 #[embassy_executor::task]
 async fn tbd_task(dac: DacCh2<'static, DAC1, Async>) -> ! {
-    info!("Starting TBD task");
     loop {
         Timer::after_secs(60).await;
-        info!("TBD task dummy DAC usage: {}", dac.read());
+        info!("TBD task placeholder DAC reading: {}", dac.read());
     }
 }

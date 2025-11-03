@@ -1,3 +1,8 @@
+//! Provides a struct [`ActivatedNotes`] for managing the activated notes of an instrument. Here "activated notes"
+//! means the notes that are currently being played (e.g., depressed on a keyboard), regardless of whether or not
+//! those notes are actually voiced. (On a monophonic instrument, many keys might be depressed, but only one will
+//! sound.)
+
 use tinyvec::{ArrayVec, array_vec};
 use wmidi::{Note, U7};
 
@@ -5,12 +10,12 @@ use wmidi::{Note, U7};
 /// 32 or more allocated notes simultaneously." Thus, this will be the default size of an ActivatedNotes instance.
 const GM2_SIMUL_NOTE_NUM: usize = 32;
 
-/// A struct for managing the activated notes of an instrument (e.g., the state of a keyboard).
+/// A struct for managing the activated notes of an instrument.
 ///
-/// Internally, this struct use the [`U7`] type because [`tinyvec`] requires that `Items` implement [`Default`].
+/// Internally, this struct uses the [`U7`] type because [`tinyvec`] requires that `Items` implement [`Default`].
 /// However, [`U7`] can be a bit unwieldy, so public interfaces will deal with the related [`Note`] type instead.
 pub struct ActivatedNotes<const N: usize = GM2_SIMUL_NOTE_NUM> {
-    /// Because tinyvec requires the wrapped value to implement Default, and Note doesn't, U7 is used.
+    /// [`U7`] representations of the currently activated notes
     data: ArrayVec<[U7; N]>,
 }
 
@@ -25,6 +30,7 @@ impl ActivatedNotes {
         Self { data: array_vec!() }
     }
 
+    /// Add a [`Note`] to the list of those currently activated. Equivalent to depressing a key on a keyboard.
     pub fn add(&mut self, note: Note) {
         let u7 = U7::from_u8_lossy(note as u8);
         // only add if space allows and if the note isn't (somehow) already registered as active; otherwise, ignore input
@@ -33,30 +39,32 @@ impl ActivatedNotes {
         }
     }
 
-    /// Returns the note that was activated first
+    /// Return the [`Note`] that was activated first.
     pub fn first(&mut self) -> Option<Note> {
         self.data.first().map(|&u7| u7.into())
     }
 
-    /// Returns the note that was activated last
+    /// Return the [`Note`] that was activated last.
     pub fn last(&mut self) -> Option<Note> {
         self.data.last().map(|&u7| u7.into())
     }
 
-    /// Returns the highest activated note
+    /// Return the highest activated [`Note`] (i.e., the rightmost on a keyboard).
     pub fn highest(&mut self) -> Option<Note> {
         self.data.iter().max().map(|&u7| u7.into())
     }
 
-    /// Returns the lowest activated note
+    /// Return the lowest activated [`Note`] (i.e., the leftmost on a keyboard).
     pub fn lowest(&mut self) -> Option<Note> {
         self.data.iter().min().map(|&u7| u7.into())
     }
 
+    /// Remove a [`Note`] from the list of those currently activated. Equivalent to releasing a depressed key on a keyboard.
     pub fn remove(&mut self, note: Note) {
         self.data.retain(|&n| n != U7::from_u8_lossy(note as u8));
     }
 
+    /// Determine if any [`Note`]s are activated.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
