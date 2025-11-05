@@ -8,9 +8,9 @@ This project is in its prototyping phase. For the foreseeable future, the MIDIva
 
 ## Features
 
-Initial development is focused providing the performer's MIDI controller all the functionality of the Micromoog's keyboard. This requires interfacing with the synth's S-Trig and KBD modules. The status of that work is detailed by module below.
+Initial development is focused on providing the performer's MIDI controller all the functionality of the Micromoog's keyboard. This requires interfacing with the synth's S-Trig and KBD modules.
 
-Watch this space for a more detailed roadmap.
+Watch this space for a more detailed roadmap. In the meantime, progress is detailed below, by module.
 
 ### S-Trig Input
 
@@ -20,11 +20,11 @@ On the roadmap, but not yet implemented, is a setting which would reset the cont
 
 ### Keyboard Input
 
-The KBD OUTPUT jack of the Micromoog is a dual-purpose jack which also receives input. When in input mode, it receives a signal indicating the note to voice.
+The KBD OUTPUT of the Micromoog is a dual-purpose jack which, despite the name, can be used as an input. When in input mode, it receives a signal indicating the note to voice.
 
-When multiple notes are played, only the lowest note is expressed. This is known as low-note priority. The MIDIval Renaissance enables three additional note priority settings: first-played, last-played, and high-note.
+When multiple notes are played on the Micromoog's keyboard, only the lowest note is expressed. This is known as low-note priority. The MIDIval Renaissance enables three additional note priority options: first-played, last-played, and high-note.
 
-A "chord cleanup" setting complements these note priorities, inserting a slight delay between MIDI input and eletrical output to account for human imprecision. If you are playing chords on your controller and have your note priority set to low, it stands to reason that you're expecting "bass lines for free" from the Micromoog. This setting enables "close enough" timing (the span of a 32nd note, assuming 120 BPM) for all the keypresses associated with the performance of a chord, so that the Micromoog doesn't play the third or the fifth for a split second on those occasions where they land before the root note.
+A "chord cleanup" setting complements these note priorities, accounting for human imprecision by inserting a slight delay (the span of a 32nd note, assuming 120 BPM) between MIDI input and eletrical output. If you are playing chords on your controller and have your note priority set to low, it stands to reason that you're expecting "bass lines for free" from the Micromoog. This setting enables "close enough" timing for all the keypresses that comprise a chord so that the Micromoog doesn't play the third or the fifth for a split second should they land before the root note.
 
 Also implemented in the KBD module is the Micromoog's glide or portamento feature. It is not yet supported by the MIDIval Renaissance.
 
@@ -75,21 +75,21 @@ See [The Hardware](#the-hardware) for information on how to connect the MIDIval 
 
 True to the Micromoog's physical keyboard, the MIDIval Renaissance accepts note input from F3 to C6. Note data outside of this range will be logged and ignored.
 
-The blue button on the Nucleo board cycles through the note priority options. This setting determines which note will sound when multiple keys are pressed. The red LED on the board indicates the active selection.
+**The blue button on the Nucleo board cycles through the note priority options.** This setting determines which note will sound when multiple keys are pressed. The red LED on the board indicates the active selection:
 
-| Number of blinks | Option             |
+| Number of blinks | Selection          |
 | ---------------- | ------------------ |
 | 1                | First-played       |
 | 2                | Last-played        |
 | 3                | Low-note (default) |
 | 4                | High-note          |
 
-The button on the breadboard toggles "chord cleanup" mode. When the blue LED is solid, the feature is enabled. See [Keyboard Input](#keyboard-input) for details on its implementation.
+**The button on the breadboard toggles "chord cleanup" mode.** When the blue LED on the Nucleo board is solid, the feature is enabled. This mode is intended for live-playing through a controller. As it batches and "swallows" notes by design, users will likely want to disable it if they intend to drive the attached synthesizer from a sequencer or MIDI file, where human imprecision is not a factor. See [Keyboard Input](#keyboard-input) for details on its implementation.
 
 ## Known Issues
 
-- The Nucleo board's USB port cannot be used to power the device. The USB port on the debugger/programmer, however, can. Be sure to power the device connecting its USB data port.
-- Embassy [has not yet fully implemented USB Host mode](https://github.com/embassy-rs/embassy/issues/3295), so this device can only be used as a peripheral. If you're looking to feed MIDI from a laptop-hosted <abbr title="digital audio workstation">DAW</abbr> to a Micromoog, this presents no problem for you. If instead you wish to live-play from a controller, you'll need to use a laptop as an intermediary for now, as shown in the following [Ardour](https://ardour.org/) screenshot, where the MIDI output of the Rev2 is routed to the input of the MIDIval Renaissance:
+- The Nucleo board's USB port cannot be used to power the device. The USB port on the debugger/programmer, however, can. Be sure to power the device before connecting its USB data port.
+- This device can be used only as a peripheral, as Embassy [has not yet fully implemented USB Host mode](https://github.com/embassy-rs/embassy/issues/3295). If you're looking to feed MIDI from a laptop-hosted <abbr title="digital audio workstation">DAW</abbr> to a Micromoog, this presents no problem for you. If instead you wish to live-play from a controller, you'll need to use a laptop as an intermediary for now, as shown in the following [Ardour](https://ardour.org/) screenshot, where the MIDI output of the Rev2 is routed to the input of the MIDIval Renaissance:
 
 ![Ardour configuration screenshot](./ardour-midi-connection-manager.png)
 
