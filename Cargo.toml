@@ -1,7 +1,6 @@
-# This file was automatically generated.
-
 [package]
 edition = "2024"
+exclude = [".vscode", ".readme-assets"]
 name = "midival_renaissance"
 version = "0.1.0"
 
