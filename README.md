@@ -91,7 +91,7 @@ True to the Micromoog's physical keyboard, the MIDIval Renaissance accepts note 
 - The Nucleo board's USB port cannot be used to power the device. The USB port on the debugger/programmer, however, can. Be sure to power the device before connecting its USB data port.
 - This device can be used only as a peripheral, as Embassy [has not yet fully implemented USB Host mode](https://github.com/embassy-rs/embassy/issues/3295). If you're looking to feed MIDI from a laptop-hosted <abbr title="digital audio workstation">DAW</abbr> to a Micromoog, this presents no problem for you. If instead you wish to live-play from a controller, you'll need to use a laptop as an intermediary for now, as shown in the following [Ardour](https://ardour.org/) screenshot, where the MIDI output of the Rev2 is routed to the input of the MIDIval Renaissance:
 
-![Ardour configuration screenshot](./ardour-midi-connection-manager.png)
+![Ardour configuration screenshot](./.readme-assets/ardour-midi-connection-manager.png)
 
 ## Disclaimer
 
