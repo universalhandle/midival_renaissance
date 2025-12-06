@@ -10,7 +10,7 @@ This project is in its prototyping phase. For the foreseeable future, the MIDIva
 
 Initial development is focused on providing the performer's MIDI controller all the functionality of the Micromoog's keyboard. This requires interfacing with the synth's S-Trig and KBD modules.
 
-Watch this space for a more detailed roadmap. In the meantime, progress is detailed below, by module.
+A roadmap is beginning to take shape [here](https://github.com/universalhandle/midival_renaissance/milestones?sort=title&direction=asc). In the meantime, progress is detailed below, by module.
 
 ### S-Trig Input
 
