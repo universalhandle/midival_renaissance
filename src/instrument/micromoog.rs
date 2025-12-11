@@ -1,7 +1,7 @@
 use core::ops::RangeInclusive;
 
 use defmt::*;
-use wmidi::{MidiMessage, Note};
+use wmidi::{ControlFunction, ControlValue, MidiMessage, Note};
 
 use crate::{
     activated_notes::ActivatedNotes,
@@ -18,6 +18,8 @@ use crate::{
 struct State {
     activated_notes: ActivatedNotes,
     current_note: Note,
+    /// MIDI CC 5 value
+    portamento_time: ControlValue,
 }
 
 impl Default for State {
@@ -25,6 +27,7 @@ impl Default for State {
         Self {
             activated_notes: ActivatedNotes::default(),
             current_note: Note::F3,
+            portamento_time: ControlValue::default(),
         }
     }
 }
@@ -104,6 +107,24 @@ impl Midi for Micromoog {
 
     fn receive_midi(&mut self, msg: MidiMessage) -> () {
         match msg {
+            MidiMessage::ControlChange(channel, control_function, control_value) => {
+                match control_function {
+                    ControlFunction::PORTAMENTO_TIME => {
+                        self.state.portamento_time = control_value;
+                        info!(
+                            "Micromoog received a Portamento Time Control Change: channel {}, value: {}",
+                            channel.number(),
+                            u8::from(control_value)
+                        );
+                    }
+                    _ => {
+                        info!(
+                            "Micromoog does not implement Control Change {}",
+                            u8::from(control_function)
+                        );
+                    }
+                }
+            }
             MidiMessage::NoteOff(channel, note, velocity) => {
                 if self.can_voice(&note) {
                     self.state.activated_notes.remove(note);
