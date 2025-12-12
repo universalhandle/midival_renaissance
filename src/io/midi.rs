@@ -1,5 +1,6 @@
 use crate::instrument::Instrument;
 use defmt::error;
+use embassy_time::Instant;
 use enum_dispatch::enum_dispatch;
 use wmidi::MidiMessage;
 
@@ -15,7 +16,11 @@ pub trait Midi {
     fn compute_state(&mut self);
 
     /// Updates internal state given a single MIDI message.
-    fn receive_midi(&mut self, msg: MidiMessage) -> ();
+    ///
+    /// Returns an optional [`Instant`] of [`NoteEmbargo`][crate::configuration::NoteEmbargo] expiry, at which time the synth is free to update
+    /// its voicing according to MIDI input received during that period. `None` indicates "chord cleanup" mode is disabled and that updates
+    /// should be carried out immediately.
+    fn receive_midi(&mut self, msg: MidiMessage) -> Option<Instant>;
 }
 
 /// Construct MIDI messages from data assumed to be USB-MIDI Event Packets.

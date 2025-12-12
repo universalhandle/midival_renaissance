@@ -3,6 +3,7 @@
 //! those notes are actually voiced. (On a monophonic instrument, many keys might be depressed, but only one will
 //! sound.)
 
+use embassy_time::Instant;
 use tinyvec::{ArrayVec, array_vec};
 use wmidi::{Note, U7};
 
@@ -17,6 +18,7 @@ const GM2_SIMUL_NOTE_NUM: usize = 32;
 pub struct ActivatedNotes<const N: usize = GM2_SIMUL_NOTE_NUM> {
     /// [`U7`] representations of the currently activated notes
     data: ArrayVec<[U7; N]>,
+    updated_at: Option<Instant>,
 }
 
 impl Default for ActivatedNotes {
@@ -27,7 +29,10 @@ impl Default for ActivatedNotes {
 
 impl ActivatedNotes {
     pub fn new() -> Self {
-        Self { data: array_vec!() }
+        Self {
+            data: array_vec!(),
+            updated_at: None,
+        }
     }
 
     /// Add a [`Note`] to the list of those currently activated. Equivalent to depressing a key on a keyboard.
@@ -36,6 +41,7 @@ impl ActivatedNotes {
         // only add if space allows and if the note isn't (somehow) already registered as active; otherwise, ignore input
         if self.data.len() != self.data.capacity() && !self.data.contains(&u7) {
             self.data.push(u7);
+            self.updated_at = Some(Instant::now());
         }
     }
 
@@ -47,6 +53,11 @@ impl ActivatedNotes {
     /// Return the [`Note`] that was activated last.
     pub fn last(&mut self) -> Option<Note> {
         self.data.last().map(|&u7| u7.into())
+    }
+
+    /// Return the instant of the last update to ActivatedNotes.
+    pub fn updated_at(&self) -> Option<Instant> {
+        self.updated_at
     }
 
     /// Return the highest activated [`Note`] (i.e., the rightmost on a keyboard).
@@ -62,6 +73,7 @@ impl ActivatedNotes {
     /// Remove a [`Note`] from the list of those currently activated. Equivalent to releasing a depressed key on a keyboard.
     pub fn remove(&mut self, note: Note) {
         self.data.retain(|&n| n != U7::from_u8_lossy(note as u8));
+        self.updated_at = Some(Instant::now());
     }
 
     /// Determine if any [`Note`]s are activated.

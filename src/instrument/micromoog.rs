@@ -1,6 +1,7 @@
 use core::ops::RangeInclusive;
 
 use defmt::*;
+use embassy_time::Instant;
 use wmidi::{ControlFunction, ControlValue, MidiMessage, Note};
 
 use crate::{
@@ -11,13 +12,15 @@ use crate::{
     io::{
         control_voltage::ControlVoltage,
         gate::{Gate, GateState},
-        midi::Midi,
+        midi::{Midi, is_note_event},
     },
 };
 
 struct State {
     activated_notes: ActivatedNotes,
     current_note: Note,
+    /// The [`Instant`] of expiry of any embargo against acting on MIDI. (`None` means no embargo; MIDI may be acted on immediately.) See [`NoteEmbargo`].
+    embargo_expiry: Option<Instant>,
     /// MIDI CC 5 value
     portamento_time: ControlValue,
 }
@@ -27,6 +30,7 @@ impl Default for State {
         Self {
             activated_notes: ActivatedNotes::default(),
             current_note: Note::F3,
+            embargo_expiry: None,
             portamento_time: ControlValue::default(),
         }
     }
@@ -105,7 +109,7 @@ impl Midi for Micromoog {
         .unwrap_or(self.state.current_note);
     }
 
-    fn receive_midi(&mut self, msg: MidiMessage) -> () {
+    fn receive_midi(&mut self, msg: MidiMessage) -> Option<Instant> {
         match msg {
             MidiMessage::ControlChange(channel, control_function, control_value) => {
                 match control_function {
@@ -170,5 +174,33 @@ impl Midi for Micromoog {
                 );
             }
         };
+
+        // This match statement is responsible for setting the embargo expiry (if any) based on whether the "chord cleanup"
+        // feature is enabled as well timing of this note event (if any) relative to previous ones.
+        match (
+            self.config.note_embargo.is_enabled(),
+            is_note_event(&msg),
+            self.state.activated_notes.updated_at(),
+            self.state.embargo_expiry,
+        ) {
+            // If the config is turned off, ensure the state matches.
+            (false, _, _, _) => {
+                self.state.embargo_expiry = None;
+            }
+            // Set an embargo for the first time.
+            (true, true, Some(updated_at), None) => {
+                self.state.embargo_expiry = Some(updated_at + self.config.note_embargo.duration());
+            }
+            // Set a new embargo time, as the update in question occurred after expiry of the previous embargo.
+            (true, true, Some(update_at), Some(embargo_expiry)) if update_at >= embargo_expiry => {
+                self.state.embargo_expiry = Some(update_at + self.config.note_embargo.duration());
+            }
+            // This arm captures legitimate no-op cases (e.g., a second note arrived within the embargo period of an earlier
+            // one) as well as cases which should be impossible (e.g., if the current MIDI event is a note event, then
+            // `updated_at` can't be `None`).
+            (_, _, _, _) => {}
+        }
+
+        self.state.embargo_expiry
     }
 }
