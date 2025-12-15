@@ -2,6 +2,7 @@ use core::ops::RangeInclusive;
 
 use defmt::*;
 use embassy_time::Instant;
+use embedded_hal::digital::OutputPin;
 use wmidi::{ControlFunction, ControlValue, MidiMessage, Note};
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
     },
     io::{
         control_voltage::ControlVoltage,
-        gate::{Gate, GateState},
+        gate::Gate,
         midi::{Midi, is_note_event},
     },
 };
@@ -74,11 +75,17 @@ impl Config for Micromoog {
 }
 
 impl Gate for Micromoog {
-    fn gate_state(&self) -> GateState {
+    fn gate<T: OutputPin>(&self, switch_trigger: &mut T) {
         if self.state.activated_notes.is_empty() {
-            GateState::Low
+            info!("Note is off");
+            switch_trigger
+                .set_low()
+                .expect("Toggling GPIO state should be infallible");
         } else {
-            GateState::High
+            info!("Note is on");
+            switch_trigger
+                .set_high()
+                .expect("Toggling GPIO state should be infallible");
         }
     }
 }

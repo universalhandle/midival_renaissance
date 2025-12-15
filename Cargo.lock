@@ -647,6 +647,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-usb",
+ "embedded-hal 1.0.0",
  "enum_dispatch",
  "num-derive",
  "num-traits",

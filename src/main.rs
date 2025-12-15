@@ -221,13 +221,7 @@ async fn voice_task(
         );
         dac.set(dac_value);
 
-        if instr.gate_is_high() {
-            info!("Note is on");
-            switch_trigger.set_high();
-        } else {
-            info!("Note is off");
-            switch_trigger.set_low();
-        }
+        instr.gate(&mut switch_trigger);
     }
 }
 
