@@ -55,17 +55,23 @@ Finally, the pushbutton switch is wired to GPIO PD1 via the dark blue wire.
 
 First, clone this repository:
 
-```
+```text
 git clone git@github.com:universalhandle/midival_renaissance.git
 ```
 
-This project uses [probe-rs](https://probe.rs) for debugging and flashing the MCU. Install it if you haven't already. Connect the Nucleo board's programmer (i.e., the ST-LINK/V2-1) to your computer via USB. Change directories into the root of the repository you cloned in the step above, then execute:
+This project uses [probe-rs](https://probe.rs) for debugging and flashing the MCU. Install it if you haven't already. Connect the Nucleo board's programmer (i.e., the ST-LINK/V2-1) to your computer via USB. Under the root of the repository you cloned in the step above, change directories into `crates/firmware` and execute:
 
+```text
+cargo embed
 ```
-cargo run --release
-````
 
-This command compiles the firmware, installs it on your development board, and prints debug information to your terminal. When the device prints "Initializing MIDIval Renaissance," it is ready to use. If you wish you may hit Control + C to stop the debugger.
+This command compiles the firmware and installs it on your development board. If you're developing and want debug information in your terminal, instead run:
+
+```text
+cargo run
+```
+
+When the device prints "Initializing MIDIval Renaissance," it is ready to use. If you wish you may hit Control + C to stop the debugger.
 
 ## Usage Notes
 
@@ -99,7 +105,7 @@ I highly value my Micromoog, and I am terrified of sending it damaging voltages.
 
 ## Resources
 
-Detailed documentation for the firmware can be viewed in your browser by executing the following command from the root of this repository:
+Detailed documentation for the firmware can be viewed in your browser by executing the following command from either `crates/firmware` or `crates/software`:
 
 ```
 cargo doc --open

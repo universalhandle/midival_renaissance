@@ -1,0 +1,8 @@
+[package]
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+license.workspace = true
+name = "midival_renaissance_lib"
+repository.workspace = true
+version.workspace = true
