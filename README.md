@@ -1,6 +1,6 @@
 # MIDIval Renaissance
 
-This repository contains firmware for a device which allows the [Micromoog Model 2090](https://en.wikipedia.org/wiki/Micromoog), a monophonic analog synthesizer produced by Moog Music from 1975 to 1979, to respond to <abbr title="Musical Instrument Digital Interface">MIDI</abbr> input. Written in [Rust](https://rust-lang.org/) using the [Embassy](https://embassy.dev/) framework, it translates MIDI messages into electrical signals compatible with the Moog Open System, more or less a flavor of [CV/gate](https://en.wikipedia.org/wiki/CV/gate).
+This repository contains firmware for a device which allows the [Micromoog Model 2090](https://en.wikipedia.org/wiki/Micromoog), a monophonic analog synthesizer produced by Moog Music from 1975 to 1979, to interface with modern music equipment by translating [MIDI](https://midi.org/midi-1-0) messages into electrical signals compatible with the Moog Open System, a flavor of [CV/gate](https://en.wikipedia.org/wiki/CV/gate). The firmware is written in [Rust](https://rust-lang.org/) using the [Embassy](https://embassy.dev/) framework.
 
 Presently the device is based on the [Nucleo-F767ZI development board](https://www.st.com/en/evaluation-tools/nucleo-f767zi.html), which is powered by an F7-series STM32 microcontroller.
 
