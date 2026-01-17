@@ -6,7 +6,6 @@ use embedded_hal::digital::OutputPin;
 use wmidi::{ControlFunction, ControlValue, MidiMessage, Note};
 
 use crate::{
-    activated_notes::ActivatedNotes,
     configuration::{
         Config, EnvelopeTrigger, InputMode, InstrumentConfig, NoteEmbargo, NotePriority,
     },
@@ -16,6 +15,8 @@ use crate::{
         midi::{Midi, is_note_event},
     },
 };
+
+use midival_renaissance_lib::midi_state::ActivatedNotes;
 
 struct State {
     activated_notes: ActivatedNotes,
@@ -117,6 +118,7 @@ impl Midi for Micromoog {
     }
 
     fn receive_midi(&mut self, msg: MidiMessage) -> Option<Instant> {
+        let mut updated_at: Option<Instant> = None;
         match msg {
             MidiMessage::ControlChange(channel, control_function, control_value) => {
                 match control_function {
@@ -139,6 +141,7 @@ impl Midi for Micromoog {
             MidiMessage::NoteOff(channel, note, velocity) => {
                 if self.can_voice(&note) {
                     self.state.activated_notes.remove(note);
+                    updated_at = Some(Instant::now());
                     info!(
                         "Micromoog received a NoteOff event: channel {}, note {}, velocity: {}",
                         channel.number(),
@@ -157,6 +160,7 @@ impl Midi for Micromoog {
             MidiMessage::NoteOn(channel, note, velocity) => {
                 if self.can_voice(&note) {
                     self.state.activated_notes.add(note);
+                    updated_at = Some(Instant::now());
                     info!(
                         "Micromoog received a NoteOn event: channel {}, note {}, velocity: {}",
                         channel.number(),
@@ -187,7 +191,7 @@ impl Midi for Micromoog {
         match (
             self.config.note_embargo.is_enabled(),
             is_note_event(&msg),
-            self.state.activated_notes.updated_at(),
+            updated_at,
             self.state.embargo_expiry,
         ) {
             // If the config is turned off, ensure the state matches.

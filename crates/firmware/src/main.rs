@@ -16,7 +16,6 @@
 #![no_std]
 #![no_main]
 
-mod activated_notes;
 mod configuration;
 mod instrument;
 mod io;

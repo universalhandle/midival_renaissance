@@ -6,3 +6,7 @@ license.workspace = true
 name = "midival_renaissance_lib"
 repository.workspace = true
 version.workspace = true
+
+[dependencies]
+tinyvec = "1.9.0"
+wmidi = { version = "4.0.10", default-features = false }
