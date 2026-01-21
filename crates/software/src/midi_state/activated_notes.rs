@@ -26,6 +26,24 @@ impl Default for ActivatedNotes {
     }
 }
 
+#[cfg(feature = "defmt")]
+impl<const N: usize> defmt::Format for ActivatedNotes<N> {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "ActivatedNotes {{ ");
+        defmt::write!(fmt, "data: [");
+        for (i, &note) in self.data.iter().enumerate() {
+            if i == 0 {
+                defmt::write!(fmt, " ");
+            } else {
+                defmt::write!(fmt, ", ");
+            }
+            defmt::write!(fmt, "{} ({})", Note::from(note).to_str(), u8::from(note));
+        }
+        defmt::write!(fmt, " ]");
+        defmt::write!(fmt, " }}");
+    }
+}
+
 impl ActivatedNotes {
     /// Construct a new `ActivatedNotes`.
     pub fn new() -> Self {
