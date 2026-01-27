@@ -59,7 +59,7 @@ bind_interrupts!(
 type InstrumentAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, Instrument>;
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
-const MIDI_STATE_RECEIVER_CNT: usize = 1;
+const MIDI_STATE_RECEIVER_CNT: usize = 0;
 type MidiStateSync = Watch<CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
 type MidiStateSender<'a> = Sender<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
 type MidiStateReceiver<'a> =
@@ -196,15 +196,10 @@ async fn main(spawner: Spawner) {
 
     let midi_state_sender = MIDI_STATE_SYNC.sender();
     midi_state_sender.send(MidiState::default());
-    unwrap!(spawner.spawn(midi_task(class, midi_state_sender)));
-
-    let midi_state_receiver = MIDI_STATE_SYNC
-        .receiver()
-        .expect("MIDI state synchronizer should have a receiver available for processing MIDI");
-    unwrap!(spawner.spawn(process_midi(instrument, midi_state_receiver)));
+    unwrap!(spawner.spawn(midi_task(class, instrument, midi_state_sender)));
 
     let sender = UPDATE_VOICING.sender();
-    unwrap!(spawner.spawn(voice_signaler(sender)));
+    unwrap!(spawner.spawn(update_voicing(sender)));
 
     let midi_state_receiver = MIDI_STATE_SYNC.anon_receiver();
     let update_voicing = UPDATE_VOICING
@@ -227,11 +222,12 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(tbd_task(dac_ch2)));
 }
 
-/// Sends a deferred [`UPDATE_VOICING`] signal at the specified [`Instant`].
+/// Task responsible for kicking off voicing tasks, delaying per the chord cleanup configuration as needed.
 ///
-/// Supports the device's "chord cleanup" functionality.
+/// Waiting inside this intermediary task prevents blocking the MIDI processing task as well as the peripherals
+/// that drive the attached synthesizer.
 #[embassy_executor::task]
-async fn voice_signaler(sender: UpdateVoicingSender<'static>) {
+async fn update_voicing(sender: UpdateVoicingSender<'static>) {
     loop {
         let expiry = { VOICE_SCHEDULE.wait().await };
         Timer::at(expiry).await;
@@ -384,12 +380,13 @@ async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
 #[embassy_executor::task]
 async fn midi_task(
     mut class: MidiClass<'static, UsbDriver>,
+    instrument: &'static InstrumentAsyncMutex,
     mut midi_state: MidiStateSender<'static>,
 ) -> ! {
     loop {
         class.wait_connection().await;
         info!("USB connected");
-        let _ = update_midi_state(&mut class, &mut midi_state).await;
+        let _ = process_midi(&mut class, instrument, &mut midi_state).await;
         info!("USB disconnected");
     }
 }
@@ -427,35 +424,27 @@ impl From<EndpointError> for Disconnected {
 
 /// Helper function which interprets data received over USB.
 ///
-/// Extracts MIDI from bytes, hands off events to the instrument for handling, and calls for voicing update if appropriate.
-async fn update_midi_state<'d, T: usb::Instance + 'd>(
+/// Extracts MIDI from bytes, updates state, and schedules voicing update if appropriate.
+async fn process_midi<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
+    instrument: &'static InstrumentAsyncMutex,
     midi_state: &mut MidiStateSender<'static>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
-    loop {
-        let n = class.read_packet(&mut buf).await?;
-        midi_state.send_modify(|state| {
-            state
-                .as_mut()
-                .expect("MIDI state should never be uninitialized")
-                .update(&buf[..n]);
-        });
-    }
-}
-
-#[embassy_executor::task]
-async fn process_midi(
-    instrument: &'static InstrumentAsyncMutex,
-    mut midi_state: MidiStateReceiver<'static>,
-) -> ! {
     let mut chord_cleanup_start: Option<Instant> = None;
     loop {
-        let state = { midi_state.changed().await };
+        let n = class.read_packet(&mut buf).await?;
+        let mut state = *(midi_state
+            .try_get()
+            .as_mut()
+            .expect("MIDI state should never be uninitialized"));
+        let operation = state.update(&buf[..n]);
+
+        midi_state.send(state);
 
         // most changes in MIDI state should be acted upon immediately; however, the voicing of notes must be scheduled
         // according to the chord cleanup configuration
-        if state.operation.contains(Operation::NoteChange) {
+        if operation.contains(Operation::NoteChange) {
             let now = Instant::now();
             let chord_cleanup = { instrument.lock().await.config().note_embargo };
 

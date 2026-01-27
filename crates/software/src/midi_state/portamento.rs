@@ -3,7 +3,7 @@
 use wmidi::{ControlValue, Note};
 
 /// A struct for managing the Portamento controls of an instrument.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct Portamento {
     /// MIDI CC 4: Portamento On/Off
     enabled: bool,

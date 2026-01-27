@@ -30,15 +30,13 @@ pub enum Operation {
 ///   booleans rather than their original `U7` values.
 ///
 /// This struct is expected to continue to grow as more features are added. State is persisted only as needed.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MidiState {
     /// Holds a representation of notes which are currently activated.
     pub activated_notes: ActivatedNotes,
     /// Contains a representation of MIDI controls related to the Portamento effect.
     pub portamento: Portamento,
-    /// Meta state which indicates the type of operation performed in the last update.
-    pub operation: Operation,
 }
 
 impl Default for MidiState {
@@ -46,17 +44,16 @@ impl Default for MidiState {
         Self {
             activated_notes: ActivatedNotes::default(),
             portamento: Portamento::default(),
-            operation: Operation::none(),
         }
     }
 }
 
 impl MidiState {
-    /// Updates the `MidiState` given a slice of data.
+    /// Updates the `MidiState` given a slice of data. Returns the type of [`Operation`] performed.
     ///
     /// Data may contain one or more one or more USB-MIDI Event Packets.
-    pub fn update(&mut self, data: &[u8]) {
-        self.operation = Operation::none();
+    pub fn update(&mut self, data: &[u8]) -> Operation {
+        let mut operation = Operation::none();
         data.chunks(4)
             .filter_map(|potential_packet| {
                 if potential_packet.len() != 4 {
@@ -72,7 +69,7 @@ impl MidiState {
                 MidiMessage::ControlChange(channel, control_function, control_value) => {
                     match control_function {
                         ControlFunction::PORTAMENTO_TIME => {
-                            self.operation |= Operation::PortamentoChange;
+                            operation |= Operation::PortamentoChange;
                             self.portamento.set_time(control_value);
                             info!(
                                 "Received Portamento Time Control Change: channel {}, value: {}",
@@ -90,7 +87,7 @@ impl MidiState {
                     }
                 }
                 MidiMessage::NoteOff(channel, note, velocity) => {
-                    self.operation |= Operation::NoteChange;
+                    operation |= Operation::NoteChange;
                     self.activated_notes.remove(note);
                     info!(
                         "Received NoteOff: channel {}, note {}, velocity: {}",
@@ -100,7 +97,7 @@ impl MidiState {
                     );
                 }
                 MidiMessage::NoteOn(channel, note, velocity) => {
-                    self.operation |= Operation::NoteChange;
+                    operation |= Operation::NoteChange;
                     self.activated_notes.add(note);
                     info!(
                         "Received NoteOn: channel {}, note {}, velocity: {}",
@@ -115,5 +112,6 @@ impl MidiState {
                     info!("Received unsupported MIDI message: {}", data);
                 }
             });
+        operation
     }
 }
