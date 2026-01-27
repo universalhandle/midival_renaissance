@@ -14,7 +14,7 @@ const GM2_SIMUL_NOTE_NUM: usize = 32;
 ///
 /// Internally, this struct uses the [`U7`] type because [`tinyvec`] requires that `Items` implement [`Default`].
 /// However, [`U7`] can be a bit unwieldy, so public interfaces will deal with the related [`Note`] type instead.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ActivatedNotes<const N: usize = GM2_SIMUL_NOTE_NUM> {
     /// [`U7`] representations of the currently activated notes
     data: ArrayVec<[U7; N]>,

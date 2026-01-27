@@ -18,16 +18,10 @@
 
 mod configuration;
 mod instrument;
-mod io;
 
 use crate::{
     configuration::{Config as _, CycleConfig},
     instrument::Instrument,
-    io::{
-        control_voltage::ControlVoltage,
-        gate::Gate,
-        midi::{Midi, bytes_to_midi_message_iterator, is_note_event},
-    },
 };
 use defmt::{panic, *};
 use embassy_executor::Spawner;
@@ -41,10 +35,17 @@ use embassy_stm32::{
     time::Hertz,
     usb,
 };
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex, signal::Signal};
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex,
+    mutex,
+    signal::Signal,
+    watch::{AnonReceiver, Receiver, Sender, Watch},
+};
 use embassy_time::{Instant, Timer};
 use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
+use midival_renaissance_lib::midi_state::{MidiState, Operation};
 use static_cell::StaticCell;
+use wmidi::Note;
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -58,8 +59,29 @@ bind_interrupts!(
 type InstrumentAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, Instrument>;
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
-/// A signal which indicates that something has changed which may affect how (or whether) the synthesizer sounds.
-static UPDATE_VOICING: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+const MIDI_STATE_RECEIVER_CNT: usize = 1;
+type MidiStateSync = Watch<CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
+type MidiStateSender<'a> = Sender<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
+type MidiStateReceiver<'a> =
+    Receiver<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
+type MidiStateSpy<'a> =
+    AnonReceiver<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
+
+/// Synchronizes MIDI state.
+static MIDI_STATE_SYNC: MidiStateSync = Watch::new();
+
+/// Notifies the [`Instant`] at which voicing may be updated, essentially communicating the end any
+/// chord cleanup period.
+static VOICE_SCHEDULE: Signal<CriticalSectionRawMutex, Instant> = Signal::new();
+
+const UPDATE_VOICING_RECEIVER_CNT: usize = 2;
+type UpdateVoicingSync = Watch<CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
+type UpdateVoicingSender<'a> = Sender<'a, CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
+type UpdatingVoicingReceiver<'a> =
+    Receiver<'a, CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
+
+/// Indicates that something has changed which may affect how (or whether) the synthesizer sounds.
+static UPDATE_VOICING: UpdateVoicingSync = Watch::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -170,57 +192,115 @@ async fn main(spawner: Spawner) {
     let (dac_ch1, dac_ch2) =
         Dac::new(p.DAC1, dac_ch1_dma, dac_ch2_dma, dac_ch1_out, dac_ch2_out).split();
 
-    let switch_trigger = Output::new(p.PG0, Level::Low, Speed::Low);
-
     unwrap!(spawner.spawn(usb_task(usb)));
-    unwrap!(spawner.spawn(midi_task(spawner, class, instrument)));
-    unwrap!(spawner.spawn(voice_task(dac_ch1, switch_trigger, instrument)));
+
+    let midi_state_sender = MIDI_STATE_SYNC.sender();
+    midi_state_sender.send(MidiState::default());
+    unwrap!(spawner.spawn(midi_task(class, midi_state_sender)));
+
+    let midi_state_receiver = MIDI_STATE_SYNC
+        .receiver()
+        .expect("MIDI state synchronizer should have a receiver available for processing MIDI");
+    unwrap!(spawner.spawn(process_midi(instrument, midi_state_receiver)));
+
+    let sender = UPDATE_VOICING.sender();
+    unwrap!(spawner.spawn(voice_signaler(sender)));
+
+    let midi_state_receiver = MIDI_STATE_SYNC.anon_receiver();
+    let update_voicing = UPDATE_VOICING
+        .receiver()
+        .expect("Update voicing synchronizer should have a receiver available");
+    unwrap!(spawner.spawn(keyboard(
+        dac_ch1,
+        instrument,
+        update_voicing,
+        midi_state_receiver
+    )));
+
+    let switch_trigger = Output::new(p.PG0, Level::Low, Speed::Low);
+    let update_voicing = UPDATE_VOICING
+        .receiver()
+        .expect("Update voicing synchronizer should have a receiver available");
+    let midi_state_receiver = MIDI_STATE_SYNC.anon_receiver();
+    unwrap!(spawner.spawn(trigger(switch_trigger, update_voicing, midi_state_receiver)));
+
     unwrap!(spawner.spawn(tbd_task(dac_ch2)));
 }
 
 /// Sends a deferred [`UPDATE_VOICING`] signal at the specified [`Instant`].
 ///
-/// Supports the device's "chord cleanup" functionality. See [`NoteEmbargo`][configuration::NoteEmbargo] for more.
+/// Supports the device's "chord cleanup" functionality.
 #[embassy_executor::task]
-async fn embargo_task(expiry: Instant) {
-    Timer::at(expiry).await;
-    UPDATE_VOICING.signal(());
+async fn voice_signaler(sender: UpdateVoicingSender<'static>) {
+    loop {
+        let expiry = { VOICE_SCHEDULE.wait().await };
+        Timer::at(expiry).await;
+        sender.send(());
+    }
 }
 
-/// Task responsible for voicing, i.e., should the instrument play a note, and if so which?
+/// Task responsible for communicating with the Micromoog's KBD input.
 #[embassy_executor::task]
-async fn voice_task(
+async fn keyboard(
     mut dac: DacCh1<'static, DAC1, Async>,
-    mut switch_trigger: Output<'static>,
     instrument: &'static InstrumentAsyncMutex,
+    mut update_voicing: UpdatingVoicingReceiver<'static>,
+    mut midi_state: MidiStateSpy<'static>,
 ) -> ! {
+    // TODO: if/when support for additional instruments is added, these values should change based on the instrument
+    // selection rather than be hardcoded here
+    let playable_notes = Note::F3..=Note::C6;
+    let volts_per_octave = 1.0_f32;
+    let default_note = Note::F3;
+
+    let mut voiced_note: Note = default_note;
     loop {
-        UPDATE_VOICING.wait().await;
-        let mut instr = instrument.lock().await;
+        let _ = { update_voicing.changed().await };
+        let state = midi_state
+            .try_get()
+            .expect("MIDI state should never be uninitialized");
 
-        // There's a bit of inconsistency in approach here. On the one hand, I'm hesitant to expose values (e.g., the note to play)
-        // outside of the instrument, because I like the safety provided by knowing the instrument's note range and by the ability to
-        // reject MIDI messages outside that range. (Perhaps I'm overly sensitive to (imagined?) edge cases where externalizing the
-        // note results in the device sending harmful current in an attempt to play an out-of-range note, prematurely optimizing for
-        // the possibility that I decide to extend this device to support other synthesizers.) On the other hand, I haven't
-        // decided how much the library code, with its fairly music-focused logic, needs to know about the hardware (i.e., the
-        // microprocessor and its peripherals). As a result, I end up gluing that all together here, perhaps awkwardly:
-        //
-        // - compute_state is just weird; if it must exist at all, it seems like it should be a private method; internally mutating
-        //   state, taking no input, and returning nothing... smells
-        // - the aforementioned safety goes out the window the moment the note is converted to voltage; either I should bite the bullet and
-        //   allow these values to be returned from the object, or I should pass in some reference to the hardware peripherals
-        instr.compute_state();
+        voiced_note = match instrument.lock().await.config().note_priority {
+            configuration::NotePriority::First => state.activated_notes.first(),
+            configuration::NotePriority::Last => state.activated_notes.last(),
+            configuration::NotePriority::Low => state.activated_notes.lowest(),
+            configuration::NotePriority::High => state.activated_notes.highest(),
+        }
+        // when all keys have been released, the oscillator is meant to retain the frequency of the last played note
+        .unwrap_or(voiced_note);
 
-        let voltage = instr.current_note_to_voltage();
+        let nth_key = voiced_note as u8 - *playable_notes.start() as u8;
+        let voltage = nth_key as f32 * volts_per_octave / 12.0;
+
         let dac_value = voltage_to_dac_value(voltage);
         info!(
             "Sending {} to DAC to achieve a voltage of {}",
             dac_value, voltage
         );
         dac.set(dac_value);
+    }
+}
 
-        instr.gate(&mut switch_trigger);
+/// Task responsible for communicating with the Micromoog's S-TRIG input.
+#[embassy_executor::task]
+async fn trigger(
+    mut switch_trigger: Output<'static>,
+    mut update_voicing: UpdatingVoicingReceiver<'static>,
+    mut midi_state: MidiStateSpy<'static>,
+) -> ! {
+    loop {
+        let _ = { update_voicing.changed().await };
+        let state = midi_state
+            .try_get()
+            .expect("MIDI state should never be uninitialized");
+
+        if state.activated_notes.is_empty() {
+            info!("Note is off");
+            switch_trigger.set_low();
+        } else {
+            info!("Note is on");
+            switch_trigger.set_high();
+        }
     }
 }
 
@@ -235,7 +315,6 @@ async fn note_priority_input_task(
         let mut instr = instrument.lock().await;
         let note_priority = instr.config().note_priority;
         instr.config_mut().note_priority = note_priority.cycle();
-        UPDATE_VOICING.signal(());
     }
 }
 
@@ -304,14 +383,13 @@ async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
 
 #[embassy_executor::task]
 async fn midi_task(
-    spawner: Spawner,
     mut class: MidiClass<'static, UsbDriver>,
-    instrument: &'static InstrumentAsyncMutex,
+    mut midi_state: MidiStateSender<'static>,
 ) -> ! {
     loop {
         class.wait_connection().await;
         info!("USB connected");
-        let _ = process_usb_data(spawner, &mut class, instrument).await;
+        let _ = update_midi_state(&mut class, &mut midi_state).await;
         info!("USB disconnected");
     }
 }
@@ -350,50 +428,63 @@ impl From<EndpointError> for Disconnected {
 /// Helper function which interprets data received over USB.
 ///
 /// Extracts MIDI from bytes, hands off events to the instrument for handling, and calls for voicing update if appropriate.
-async fn process_usb_data<'d, T: usb::Instance + 'd>(
-    spawner: Spawner,
+async fn update_midi_state<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
-    instrument: &'static InstrumentAsyncMutex,
+    midi_state: &mut MidiStateSender<'static>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
-    let mut embargo_expiry: Option<Instant> = None;
     loop {
         let n = class.read_packet(&mut buf).await?;
-        let mut instr = instrument.lock().await;
+        midi_state.send_modify(|state| {
+            state
+                .as_mut()
+                .expect("MIDI state should never be uninitialized")
+                .update(&buf[..n]);
+        });
+    }
+}
 
-        // iteration here is to account for perfectly simultaneous events (e.g., a chord sent from a DAW, where the packet will
-        // contain multiple Note On events)
-        bytes_to_midi_message_iterator(&buf[..n]).for_each(|midi_msg| {
-            let is_note_event = is_note_event(&midi_msg);
-            let hold_until = instr.receive_midi(midi_msg);
+#[embassy_executor::task]
+async fn process_midi(
+    instrument: &'static InstrumentAsyncMutex,
+    mut midi_state: MidiStateReceiver<'static>,
+) -> ! {
+    let mut chord_cleanup_start: Option<Instant> = None;
+    loop {
+        let state = { midi_state.changed().await };
 
-            // note events should either be voiced right away or batched/embargoed; receive_midi returns an optional embargo time
-            // depending on configuration (notably, "chord cleanup")
-            if is_note_event {
-                match (hold_until, embargo_expiry) {
-                    // No embargo required; voice right away.
-                    (None, _) => {
-                        UPDATE_VOICING.signal(());
-                    }
-                    // Set an embargo for the first time.
-                    (Some(hold_until), None) => {
-                        // Subsequent events until the expiry will be batched with this one.
-                        embargo_expiry = Some(hold_until);
-                        unwrap!(spawner.spawn(embargo_task(hold_until)));
-                    }
-                    // This event is the first in a new embargo period.
-                    (Some(hold_until), Some(expiry)) if hold_until > expiry => {
-                        // Subsequent events until the expiry will be batched with this one.
-                        embargo_expiry = Some(hold_until);
-                        unwrap!(spawner.spawn(embargo_task(hold_until)));
-                    }
-                    // This event occurs within an embargo period set by a previous event.
-                    (Some(_), Some(_)) => {
-                        debug!("Note event batched, to be processed after embargo");
+        // most changes in MIDI state should be acted upon immediately; however, the voicing of notes must be scheduled
+        // according to the chord cleanup configuration
+        if state.operation.contains(Operation::NoteChange) {
+            let now = Instant::now();
+            let chord_cleanup = { instrument.lock().await.config().note_embargo };
+
+            match (chord_cleanup.is_enabled(), chord_cleanup_start) {
+                // chord cleanup is enabled but hasn't started
+                (true, None) => {
+                    chord_cleanup_start = Some(now);
+                    VOICE_SCHEDULE.signal(now + chord_cleanup.duration());
+                }
+                // chord cleanup is enabled...
+                (true, Some(start)) => {
+                    let expiry = start + chord_cleanup.duration();
+
+                    // ...and this note event lands outside the previous cleanup period, marking the beginning of a new period
+                    if now > expiry {
+                        chord_cleanup_start = Some(now);
+                        VOICE_SCHEDULE.signal(now + chord_cleanup.duration());
+                    } else {
+                        info!(
+                            "Note event received during chord cleanup period, will be considered in batch"
+                        );
                     }
                 }
+                (false, _) => {
+                    chord_cleanup_start = None;
+                    VOICE_SCHEDULE.signal(now);
+                }
             }
-        });
+        }
     }
 }
 

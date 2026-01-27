@@ -8,6 +8,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+bitmask-enum = "2.2.5"
 defmt = { version = "1.0.1", optional = true }
 tinyvec = "1.9.0"
 wmidi = { version = "4.0.10", default-features = false }

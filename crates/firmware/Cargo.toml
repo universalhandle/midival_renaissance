@@ -31,7 +31,6 @@ embassy-stm32 = { version = "0.3.0", features = [
 embassy-sync = "0.7.1"
 embassy-time = { version = "0.4.0", features = ["tick-hz-32_768"] }
 embassy-usb = "0.5.0"
-embedded-hal = "1.0.0"
 enum_dispatch = "0.3.13"
 midival_renaissance_lib = { path = "../software" }
 num-derive = "0.4.2"
@@ -61,4 +60,5 @@ debug = [
     "embassy-time/defmt",
     "embassy-time/defmt-timestamp-uptime",
     "embassy-stm32/defmt",
+    "midival_renaissance_lib/debug"
 ]
