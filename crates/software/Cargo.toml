@@ -15,5 +15,4 @@ wmidi = { version = "4.0.10", default-features = false }
 
 [features]
 defmt = ["dep:defmt"]
-default = ["debug"]
 debug = ["defmt"]

@@ -1,5 +1,4 @@
 use bitmask_enum::bitmask;
-use defmt::*;
 use wmidi::{ControlFunction, MidiMessage};
 
 mod activated_notes;
@@ -57,7 +56,8 @@ impl MidiState {
         data.chunks(4)
             .filter_map(|potential_packet| {
                 if potential_packet.len() != 4 {
-                    error!("USB-MIDI Event Packets must always be 32 bits long");
+                    #[cfg(feature = "defmt")]
+                    defmt::error!("USB-MIDI Event Packets must always be 32 bits long");
                     None
                 } else {
                     // the zeroth bit is intentionally ignored because the Packet Header is not of interest;
@@ -66,50 +66,57 @@ impl MidiState {
                 }
             })
             .for_each(|msg| match msg {
-                MidiMessage::ControlChange(channel, control_function, control_value) => {
+                MidiMessage::ControlChange(_channel, control_function, control_value) => {
                     match control_function {
                         ControlFunction::PORTAMENTO_TIME => {
                             operation |= Operation::PortamentoChange;
                             self.portamento.set_time(control_value);
-                            info!(
+                            #[cfg(feature = "defmt")]
+                            defmt::info!(
                                 "Received Portamento Time Control Change: channel {}, value: {}",
-                                channel.number(),
+                                _channel.number(),
                                 u8::from(control_value)
                             );
                         }
                         _ => {
-                            info!(
+                            #[cfg(feature = "defmt")]
+                            defmt::info!(
                                 "Received unsupported Control Change {} on channel {}",
                                 u8::from(control_function),
-                                channel.number()
+                                _channel.number()
                             );
                         }
                     }
                 }
-                MidiMessage::NoteOff(channel, note, velocity) => {
+                MidiMessage::NoteOff(_channel, note, _velocity) => {
                     operation |= Operation::NoteChange;
                     self.activated_notes.remove(note);
-                    info!(
+                    #[cfg(feature = "defmt")]
+                    defmt::info!(
                         "Received NoteOff: channel {}, note {}, velocity: {}",
-                        channel.number(),
+                        _channel.number(),
                         note.to_str(),
-                        u8::from(velocity)
+                        u8::from(_velocity)
                     );
                 }
-                MidiMessage::NoteOn(channel, note, velocity) => {
+                MidiMessage::NoteOn(_channel, note, _velocity) => {
                     operation |= Operation::NoteChange;
                     self.activated_notes.add(note);
-                    info!(
+                    #[cfg(feature = "defmt")]
+                    defmt::info!(
                         "Received NoteOn: channel {}, note {}, velocity: {}",
-                        channel.number(),
+                        _channel.number(),
                         note.to_str(),
-                        u8::from(velocity)
+                        u8::from(_velocity)
                     );
                 }
                 _ => {
-                    let mut data = [0_u8; 3];
-                    msg.copy_to_slice(&mut data).unwrap();
-                    info!("Received unsupported MIDI message: {}", data);
+                    #[cfg(feature = "defmt")]
+                    {
+                        let mut data = [0_u8; 3];
+                        msg.copy_to_slice(&mut data).unwrap();
+                        defmt::info!("Received unsupported MIDI message: {}", data);
+                    }
                 }
             });
         operation
