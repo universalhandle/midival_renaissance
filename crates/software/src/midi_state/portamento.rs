@@ -3,7 +3,7 @@
 use wmidi::{ControlValue, Note};
 
 /// A struct for managing the Portamento controls of an instrument.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Portamento {
     /// MIDI CC 4: Portamento On/Off
     enabled: bool,
@@ -49,6 +49,28 @@ impl defmt::Format for Portamento {
             origin_override.map(|v| u8::from(v)),
             u8::from(time),
             time_lsb.map(|v| u8::from(v))
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wmidi::U7;
+
+    #[test]
+    fn set_time() {
+        let mut p = Portamento::default();
+        p.set_time(U7::from_u8_lossy(111));
+        assert_eq!(
+            Portamento {
+                enabled: true,
+                origin_override: None,
+                time: U7::from_u8_lossy(111),
+                time_lsb: None,
+            },
+            p,
+            "Expected left but got right"
         );
     }
 }

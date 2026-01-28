@@ -122,3 +122,90 @@ impl MidiState {
         operation
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wmidi::{Channel, Note, U7};
+
+    #[test]
+    fn set_portamento() {
+        let mut bytes = [0_u8; 3];
+        let _ = MidiMessage::ControlChange(
+            Channel::Ch1,
+            ControlFunction::PORTAMENTO_TIME,
+            U7::from_u8_lossy(111),
+        )
+        .copy_to_slice(&mut bytes);
+        let packet = [0, bytes[0], bytes[1], bytes[2]];
+
+        let mut state = MidiState::default();
+        let op = state.update(&packet);
+        assert_eq!(
+            op,
+            Operation::PortamentoChange,
+            "Expected left but got right"
+        );
+    }
+
+    #[test]
+    fn note_change() {
+        let mut bytes = [0_u8; 3];
+        let _ = MidiMessage::NoteOn(Channel::Ch1, Note::C4, U7::from_u8_lossy(111))
+            .copy_to_slice(&mut bytes);
+        let packet = [0, bytes[0], bytes[1], bytes[2]];
+
+        let mut state = MidiState::default();
+        let op = state.update(&packet);
+        assert_eq!(op, Operation::NoteChange, "Expected left but got right");
+    }
+
+    #[test]
+    fn note_and_portamento_change() {
+        let mut note_bytes = [0_u8; 3];
+        let _ = MidiMessage::NoteOn(Channel::Ch1, Note::C4, U7::from_u8_lossy(111))
+            .copy_to_slice(&mut note_bytes);
+        let mut portamento_bytes = [0_u8; 3];
+        let _ = MidiMessage::ControlChange(
+            Channel::Ch1,
+            ControlFunction::PORTAMENTO_TIME,
+            U7::from_u8_lossy(111),
+        )
+        .copy_to_slice(&mut portamento_bytes);
+        let packet = [
+            0,
+            note_bytes[0],
+            note_bytes[1],
+            note_bytes[2],
+            0,
+            portamento_bytes[0],
+            portamento_bytes[1],
+            portamento_bytes[2],
+        ];
+
+        let mut state = MidiState::default();
+        let op = state.update(&packet);
+        assert_eq!(
+            op,
+            Operation::NoteChange | Operation::PortamentoChange,
+            "Expected left but got right"
+        );
+    }
+
+    #[test]
+    fn noop() {
+        let mut bytes = [0_u8; 3];
+        let _ = MidiMessage::ControlChange(
+            Channel::Ch1,
+            // a control function unlikely ever to be supported by this device
+            ControlFunction::BANK_SELECT,
+            U7::from_u8_lossy(111),
+        )
+        .copy_to_slice(&mut bytes);
+        let packet = [0, bytes[0], bytes[1], bytes[2]];
+
+        let mut state = MidiState::default();
+        let op = state.update(&packet);
+        assert_eq!(op, Operation::none(), "Expected left but got right");
+    }
+}
