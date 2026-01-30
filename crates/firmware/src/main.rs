@@ -16,12 +16,15 @@
 #![no_std]
 #![no_main]
 
+mod chord_cleanup;
 mod configuration;
-mod instrument;
+mod note_provider;
 
 use crate::{
-    configuration::{Config as _, CycleConfig},
-    instrument::Instrument,
+    chord_cleanup::{CHORD_CLEANUP_SYNC, ChordCleanupSpy, chord_cleanup_config},
+    note_provider::{
+        NOTE_PROVIDER_SYNC, NoteProviderReceiver, display_note_provider, select_note_provider,
+    },
 };
 use defmt::{panic, *};
 use embassy_executor::Spawner;
@@ -37,7 +40,6 @@ use embassy_stm32::{
 };
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
-    mutex,
     signal::Signal,
     watch::{AnonReceiver, Receiver, Sender, Watch},
 };
@@ -56,14 +58,11 @@ bind_interrupts!(
     }
 );
 
-type InstrumentAsyncMutex = mutex::Mutex<CriticalSectionRawMutex, Instrument>;
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
 const MIDI_STATE_RECEIVER_CNT: usize = 0;
 type MidiStateSync = Watch<CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
 type MidiStateSender<'a> = Sender<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
-type MidiStateReceiver<'a> =
-    Receiver<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
 type MidiStateSpy<'a> =
     AnonReceiver<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
 
@@ -115,18 +114,20 @@ async fn main(spawner: Spawner) {
     }
     let p = embassy_stm32::init(config);
 
-    static INSTRUMENT: StaticCell<InstrumentAsyncMutex> = StaticCell::new();
-    let instrument = INSTRUMENT.init(mutex::Mutex::new(Instrument::default()));
-
     let button = ExtiInput::new(p.PC13, p.EXTI13, Pull::None);
-    unwrap!(spawner.spawn(note_priority_input_task(button, instrument)));
+    let note_provider_sender = NOTE_PROVIDER_SYNC.sender();
+    unwrap!(spawner.spawn(select_note_provider(button, note_provider_sender)));
 
     let red_led = Output::new(p.PB14, Level::Low, Speed::Low);
-    unwrap!(spawner.spawn(note_priority_display_task(red_led, instrument)));
+    let note_provider_receiver = NOTE_PROVIDER_SYNC
+        .receiver()
+        .expect("Note provider synchronizer should have a receiver available");
+    unwrap!(spawner.spawn(display_note_provider(red_led, note_provider_receiver)));
 
     let toggle = ExtiInput::new(p.PD1, p.EXTI1, Pull::Up);
     let blue_led = Output::new(p.PB7, Level::Low, Speed::Low);
-    unwrap!(spawner.spawn(note_event_embargo_input_task(toggle, blue_led, instrument)));
+    let chord_cleanup = CHORD_CLEANUP_SYNC.sender();
+    unwrap!(spawner.spawn(chord_cleanup_config(toggle, blue_led, chord_cleanup)));
 
     // Create the driver, from the HAL.
     static ENDPOINT_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
@@ -194,20 +195,24 @@ async fn main(spawner: Spawner) {
 
     unwrap!(spawner.spawn(usb_task(usb)));
 
+    let chord_cleanup = CHORD_CLEANUP_SYNC.anon_receiver();
     let midi_state_sender = MIDI_STATE_SYNC.sender();
     midi_state_sender.send(MidiState::default());
-    unwrap!(spawner.spawn(midi_task(class, instrument, midi_state_sender)));
+    unwrap!(spawner.spawn(midi_task(class, chord_cleanup, midi_state_sender)));
 
     let sender = UPDATE_VOICING.sender();
     unwrap!(spawner.spawn(update_voicing(sender)));
 
-    let midi_state_receiver = MIDI_STATE_SYNC.anon_receiver();
+    let note_provider_receiver = NOTE_PROVIDER_SYNC
+        .receiver()
+        .expect("Note provider synchronizer should have a receiver available");
     let update_voicing = UPDATE_VOICING
         .receiver()
         .expect("Update voicing synchronizer should have a receiver available");
+    let midi_state_receiver = MIDI_STATE_SYNC.anon_receiver();
     unwrap!(spawner.spawn(keyboard(
         dac_ch1,
-        instrument,
+        note_provider_receiver,
         update_voicing,
         midi_state_receiver
     )));
@@ -239,7 +244,7 @@ async fn update_voicing(sender: UpdateVoicingSender<'static>) {
 #[embassy_executor::task]
 async fn keyboard(
     mut dac: DacCh1<'static, DAC1, Async>,
-    instrument: &'static InstrumentAsyncMutex,
+    mut note_provider: NoteProviderReceiver<'static>,
     mut update_voicing: UpdatingVoicingReceiver<'static>,
     mut midi_state: MidiStateSpy<'static>,
 ) -> ! {
@@ -256,7 +261,7 @@ async fn keyboard(
             .try_get()
             .expect("MIDI state should never be uninitialized");
 
-        voiced_note = match instrument.lock().await.config().note_priority {
+        voiced_note = match note_provider.get().await {
             configuration::NotePriority::First => state.activated_notes.first(),
             configuration::NotePriority::Last => state.activated_notes.last(),
             configuration::NotePriority::Low => state.activated_notes.lowest(),
@@ -300,78 +305,6 @@ async fn trigger(
     }
 }
 
-/// Handles button presses, cycling through the [`NotePriority`][`configuration::NotePriority`] configurations.
-#[embassy_executor::task]
-async fn note_priority_input_task(
-    mut button: ExtiInput<'static>,
-    instrument: &'static InstrumentAsyncMutex,
-) -> ! {
-    loop {
-        button.wait_for_rising_edge().await;
-        let mut instr = instrument.lock().await;
-        let note_priority = instr.config().note_priority;
-        instr.config_mut().note_priority = note_priority.cycle();
-    }
-}
-
-/// Provisional input and status indicator for the "chord cleanup" feature.
-///
-/// Presently this has two states: off (no LED) and 32nd note (solid blue LED). These represent the batching delay period for
-/// the "chord cleanup" feature (more info: [`NoteEmbargo`][configuration::NoteEmbargo]). The input and display are provisional
-/// because I only have pushbutton inputs at present. Should it turn out that more states are necessary, a selector switch seems
-/// more appropriate. If not, a toggle or slider switch seems preferable to a pushbutton.
-#[embassy_executor::task]
-async fn note_event_embargo_input_task(
-    mut button: ExtiInput<'static>,
-    mut led: Output<'static>,
-    instrument: &'static InstrumentAsyncMutex,
-) -> ! {
-    loop {
-        button.wait_for_rising_edge().await;
-        let mut instr = instrument.lock().await;
-        let new_note_embargo = instr.config().note_embargo.cycle();
-        instr.config_mut().note_embargo = new_note_embargo;
-
-        match new_note_embargo {
-            configuration::NoteEmbargo::None => {
-                led.set_low();
-            }
-            configuration::NoteEmbargo::ThirtySecondNote => {
-                led.set_high();
-            }
-        }
-    }
-}
-
-/// Provides a quick and dirty status indicator for user-configurable [`NotePriority`][`configuration::NotePriority`].
-///
-/// Each cycle is divided in half. The LED remains dark for one half. For the other, the
-/// LED lights up N times (where N is one more than the index of the selected item).
-/// Of course this this won't scale well, but it suits our purposes for now.
-#[embassy_executor::task]
-async fn note_priority_display_task(
-    mut led: Output<'static>,
-    instrument: &'static InstrumentAsyncMutex,
-) -> ! {
-    const BLINK_SLEEP_MS: u64 = 1_000_000;
-
-    loop {
-        led.set_low();
-        Timer::after_micros(BLINK_SLEEP_MS).await;
-
-        // since the index starts with 0, 1 is added or else the LED wouldn't blink at all for the "first" (i.e., zeroth) configuration option
-        let blink_cnt = (instrument.lock().await.config().note_priority as u8).saturating_add(1);
-        // mult by two to account for the "off" periods, sub 1 so the LED always starts and ends lit
-        let animation_frames = blink_cnt * 2 - 1;
-        let mut counter = animation_frames;
-        while counter > 0 {
-            led.toggle();
-            Timer::after_micros(BLINK_SLEEP_MS / u64::from(animation_frames)).await;
-            counter -= 1;
-        }
-    }
-}
-
 #[embassy_executor::task]
 async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
     usb.run().await
@@ -380,13 +313,13 @@ async fn usb_task(mut usb: UsbDevice<'static, UsbDriver>) -> ! {
 #[embassy_executor::task]
 async fn midi_task(
     mut class: MidiClass<'static, UsbDriver>,
-    instrument: &'static InstrumentAsyncMutex,
+    mut chord_cleanup: ChordCleanupSpy<'static>,
     mut midi_state: MidiStateSender<'static>,
 ) -> ! {
     loop {
         class.wait_connection().await;
         info!("USB connected");
-        let _ = process_midi(&mut class, instrument, &mut midi_state).await;
+        let _ = process_midi(&mut class, &mut chord_cleanup, &mut midi_state).await;
         info!("USB disconnected");
     }
 }
@@ -427,7 +360,7 @@ impl From<EndpointError> for Disconnected {
 /// Extracts MIDI from bytes, updates state, and schedules voicing update if appropriate.
 async fn process_midi<'d, T: usb::Instance + 'd>(
     class: &mut MidiClass<'d, usb::Driver<'d, T>>,
-    instrument: &'static InstrumentAsyncMutex,
+    chord_cleanup: &mut ChordCleanupSpy<'static>,
     midi_state: &mut MidiStateSender<'static>,
 ) -> Result<(), Disconnected> {
     let mut buf = [0; 64];
@@ -446,22 +379,24 @@ async fn process_midi<'d, T: usb::Instance + 'd>(
         // according to the chord cleanup configuration
         if operation.contains(Operation::NoteChange) {
             let now = Instant::now();
-            let chord_cleanup = { instrument.lock().await.config().note_embargo };
+            let cc = chord_cleanup
+                .try_get()
+                .expect("Chord cleanup state should never be uninitialized");
 
-            match (chord_cleanup.is_enabled(), chord_cleanup_start) {
+            match (cc.is_enabled(), chord_cleanup_start) {
                 // chord cleanup is enabled but hasn't started
                 (true, None) => {
                     chord_cleanup_start = Some(now);
-                    VOICE_SCHEDULE.signal(now + chord_cleanup.duration());
+                    VOICE_SCHEDULE.signal(now + cc.duration());
                 }
                 // chord cleanup is enabled...
                 (true, Some(start)) => {
-                    let expiry = start + chord_cleanup.duration();
+                    let expiry = start + cc.duration();
 
                     // ...and this note event lands outside the previous cleanup period, marking the beginning of a new period
                     if now > expiry {
                         chord_cleanup_start = Some(now);
-                        VOICE_SCHEDULE.signal(now + chord_cleanup.duration());
+                        VOICE_SCHEDULE.signal(now + cc.duration());
                     } else {
                         info!(
                             "Note event received during chord cleanup period, will be considered in batch"
