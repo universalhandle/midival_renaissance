@@ -10,7 +10,7 @@ version.workspace = true
 [dependencies]
 bitmask-enum = "2.2.5"
 defmt = { version = "1.0.1", optional = true }
-embassy-time = "0.4.0"
+embassy-time = "0.5"
 num-derive = "0.4.2"
 num-traits = { version = "0.2.19", default-features = false }
 tinyvec = "1.9.0"

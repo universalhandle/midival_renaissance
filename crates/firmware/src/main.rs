@@ -30,9 +30,10 @@ use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_stm32::{
     Config, bind_interrupts,
-    dac::{Dac, DacCh1, DacCh2, Value},
-    exti::ExtiInput,
+    dac::{Dac, DacCh1, Value},
+    exti::{self, ExtiInput},
     gpio::{Level, Output, Pull, Speed},
+    interrupt,
     mode::Async,
     peripherals::{self, DAC1},
     time::Hertz,
@@ -57,6 +58,8 @@ use {defmt_rtt as _, panic_probe as _};
 bind_interrupts!(
     #[doc(hidden)]
     struct Irqs {
+        EXTI1 => exti::InterruptHandler<interrupt::typelevel::EXTI1>;
+        EXTI15_10 => exti::InterruptHandler<interrupt::typelevel::EXTI15_10>;
         OTG_FS => usb::InterruptHandler<peripherals::USB_OTG_FS>;
     }
 );
@@ -117,7 +120,7 @@ async fn main(spawner: Spawner) {
     }
     let p = embassy_stm32::init(config);
 
-    let button = ExtiInput::new(p.PC13, p.EXTI13, Pull::None);
+    let button = ExtiInput::new(p.PC13, p.EXTI13, Pull::None, Irqs);
     let note_provider_sender = NOTE_PROVIDER_SYNC.sender();
     unwrap!(spawner.spawn(select_note_provider(button, note_provider_sender)));
 
@@ -127,7 +130,7 @@ async fn main(spawner: Spawner) {
         .expect("Note provider synchronizer should have a receiver available");
     unwrap!(spawner.spawn(display_note_provider(red_led, note_provider_receiver)));
 
-    let toggle = ExtiInput::new(p.PD1, p.EXTI1, Pull::Up);
+    let toggle = ExtiInput::new(p.PD1, p.EXTI1, Pull::Up, Irqs);
     let blue_led = Output::new(p.PB7, Level::Low, Speed::Low);
     let chord_cleanup = CHORD_CLEANUP_SYNC.sender();
     unwrap!(spawner.spawn(chord_cleanup_config(toggle, blue_led, chord_cleanup)));
@@ -193,7 +196,7 @@ async fn main(spawner: Spawner) {
     let dac_ch2_out = p.PA5;
     let dac_ch2_dma = p.DMA1_CH6;
 
-    let (dac_ch1, dac_ch2) =
+    let (dac_ch1, _dac_ch2) =
         Dac::new(p.DAC1, dac_ch1_dma, dac_ch2_dma, dac_ch1_out, dac_ch2_out).split();
 
     unwrap!(spawner.spawn(usb_task(usb)));
@@ -226,8 +229,6 @@ async fn main(spawner: Spawner) {
         .expect("Update voicing synchronizer should have a receiver available");
     let midi_state_receiver = MIDI_STATE_SYNC.anon_receiver();
     unwrap!(spawner.spawn(trigger(switch_trigger, update_voicing, midi_state_receiver)));
-
-    unwrap!(spawner.spawn(tbd_task(dac_ch2)));
 }
 
 /// Task responsible for kicking off voicing tasks, delaying per the chord cleanup configuration as needed.
@@ -416,15 +417,5 @@ async fn process_midi<'d, T: usb::Instance + 'd>(
                 }
             }
         }
-    }
-}
-
-/// Placeholder task to ensure both DAC channels are used, preventing the DAC itself from being disabled;
-/// see <https://github.com/embassy-rs/embassy/issues/4577>.
-#[embassy_executor::task]
-async fn tbd_task(dac: DacCh2<'static, DAC1, Async>) -> ! {
-    loop {
-        Timer::after_secs(60).await;
-        info!("TBD task placeholder DAC reading: {}", dac.read());
     }
 }
