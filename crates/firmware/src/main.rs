@@ -76,7 +76,7 @@ static VOICE_SCHEDULE: Signal<CriticalSectionRawMutex, Instant> = Signal::new();
 const UPDATE_VOICING_RECEIVER_CNT: usize = 2;
 type UpdateVoicingSync = Watch<CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
 type UpdateVoicingSender<'a> = Sender<'a, CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
-type UpdatingVoicingReceiver<'a> =
+type UpdateVoicingReceiver<'a> =
     Receiver<'a, CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
 
 /// Indicates that something has changed which may affect how (or whether) the synthesizer sounds.
@@ -245,7 +245,7 @@ async fn update_voicing(sender: UpdateVoicingSender<'static>) {
 async fn keyboard(
     mut dac: DacCh1<'static, DAC1, Async>,
     mut note_provider: NoteProviderReceiver<'static>,
-    mut update_voicing: UpdatingVoicingReceiver<'static>,
+    mut update_voicing: UpdateVoicingReceiver<'static>,
     mut midi_state: MidiStateSpy<'static>,
 ) -> ! {
     // TODO: if/when support for additional instruments is added, these values should change based on the instrument
@@ -286,7 +286,7 @@ async fn keyboard(
 #[embassy_executor::task]
 async fn trigger(
     mut switch_trigger: Output<'static>,
-    mut update_voicing: UpdatingVoicingReceiver<'static>,
+    mut update_voicing: UpdateVoicingReceiver<'static>,
     mut midi_state: MidiStateSpy<'static>,
 ) -> ! {
     loop {
