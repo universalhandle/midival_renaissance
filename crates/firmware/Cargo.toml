@@ -32,8 +32,6 @@ embassy-sync = "0.7.1"
 embassy-time = { version = "0.4.0", features = ["tick-hz-32_768"] }
 embassy-usb = "0.5.0"
 midival_renaissance_lib = { path = "../software" }
-num-derive = "0.4.2"
-num-traits = { version = "0.2.19", default-features = false }
 panic-halt = "1.0.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
 static_cell = "2.1.1"

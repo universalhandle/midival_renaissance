@@ -8,3 +8,5 @@
 
 /// Data structures for tracking MIDI messages the device has received.
 pub mod midi_state;
+
+pub mod configuration;

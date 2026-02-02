@@ -10,6 +10,9 @@ version.workspace = true
 [dependencies]
 bitmask-enum = "2.2.5"
 defmt = { version = "1.0.1", optional = true }
+embassy-time = "0.4.0"
+num-derive = "0.4.2"
+num-traits = { version = "0.2.19", default-features = false }
 tinyvec = "1.9.0"
 wmidi = { version = "4.0.10", default-features = false }
 

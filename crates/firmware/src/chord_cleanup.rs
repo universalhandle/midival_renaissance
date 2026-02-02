@@ -1,11 +1,11 @@
 //! Tasks and types related the [chord cleanup](`ChordCleanup`) feature.
 
-use crate::configuration::{ChordCleanup, CycleConfig};
 use embassy_stm32::{exti::ExtiInput, gpio::Output};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     watch::{AnonReceiver, Sender, Watch},
 };
+use midival_renaissance_lib::configuration::{ChordCleanup, CycleConfig};
 
 const CHORD_CLEANUP_RECEIVER_CNT: usize = 0;
 /// Syncs [chord cleanup](`ChordCleanup`) config across tasks.

@@ -17,7 +17,6 @@
 #![no_main]
 
 mod chord_cleanup;
-mod configuration;
 mod note_provider;
 
 use crate::{
@@ -46,7 +45,10 @@ use embassy_sync::{
 };
 use embassy_time::{Instant, Timer};
 use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
-use midival_renaissance_lib::midi_state::{MidiState, Operation};
+use midival_renaissance_lib::{
+    configuration::NotePriority,
+    midi_state::{MidiState, Operation},
+};
 use static_cell::StaticCell;
 use wmidi::Note;
 
@@ -267,10 +269,10 @@ async fn keyboard(
             .expect("MIDI state should never be uninitialized");
 
         voiced_note = match note_priority {
-            configuration::NotePriority::First => state.activated_notes.first(),
-            configuration::NotePriority::Last => state.activated_notes.last(),
-            configuration::NotePriority::Low => state.activated_notes.lowest(),
-            configuration::NotePriority::High => state.activated_notes.highest(),
+            NotePriority::First => state.activated_notes.first(),
+            NotePriority::Last => state.activated_notes.last(),
+            NotePriority::Low => state.activated_notes.lowest(),
+            NotePriority::High => state.activated_notes.highest(),
         }
         // when all keys have been released, the oscillator is meant to retain the frequency of the last played note
         .unwrap_or(voiced_note);

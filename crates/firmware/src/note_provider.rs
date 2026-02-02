@@ -1,12 +1,12 @@
 //! Tasks and types related the configurations which determine which note will sound.
 
-use crate::configuration::{CycleConfig, NotePriority};
 use embassy_stm32::{exti::ExtiInput, gpio::Output};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     watch::{Receiver, Sender, Watch},
 };
 use embassy_time::Timer;
+use midival_renaissance_lib::configuration::{CycleConfig, NotePriority};
 
 const NOTE_PROVIDER_RECEIVER_CNT: usize = 2;
 /// Syncs note provider config across tasks.
