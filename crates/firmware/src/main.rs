@@ -28,6 +28,7 @@ use crate::{
 };
 use defmt::{panic, *};
 use embassy_executor::Spawner;
+use embassy_futures::select::{Either, select};
 use embassy_stm32::{
     Config, bind_interrupts,
     dac::{Dac, DacCh1, DacCh2, Value},
@@ -256,12 +257,16 @@ async fn keyboard(
 
     let mut voiced_note: Note = default_note;
     loop {
-        let _ = { update_voicing.changed().await };
+        let note_priority = match select(update_voicing.changed(), note_provider.changed()).await {
+            Either::First(_) => note_provider.get().await,
+            Either::Second(np) => np,
+        };
+
         let state = midi_state
             .try_get()
             .expect("MIDI state should never be uninitialized");
 
-        voiced_note = match note_provider.get().await {
+        voiced_note = match note_priority {
             configuration::NotePriority::First => state.activated_notes.first(),
             configuration::NotePriority::Last => state.activated_notes.last(),
             configuration::NotePriority::Low => state.activated_notes.lowest(),
