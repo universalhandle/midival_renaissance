@@ -1,11 +1,19 @@
 //! Tasks and types related the [chord cleanup](`ChordCleanup`) feature.
 
+use crate::MidiStateSender;
+use embassy_futures::select::{Either, select};
 use embassy_stm32::{exti::ExtiInput, gpio::Output};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
+    signal::Signal,
     watch::{AnonReceiver, Sender, Watch},
 };
-use midival_renaissance_lib::configuration::{ChordCleanup, CycleConfig};
+use embassy_time::{Instant, Timer};
+use midival_renaissance_lib::{
+    configuration::{ChordCleanup, CycleConfig},
+    midi_state::ActivatedNotes,
+};
+use wmidi::MidiMessage;
 
 const CHORD_CLEANUP_RECEIVER_CNT: usize = 0;
 /// Syncs [chord cleanup](`ChordCleanup`) config across tasks.
@@ -47,6 +55,81 @@ pub async fn chord_cleanup_config(
             }
             ChordCleanup::ThirtySecondNote => {
                 led.set_high();
+            }
+        }
+    }
+}
+
+type DeferredMidiSync<'a> = Signal<CriticalSectionRawMutex, (Instant, MidiMessage<'a>)>;
+pub static DEFERRED_MIDI_MSG: DeferredMidiSync = Signal::new();
+
+/// Temporarily caches note events that comprise the performance (or release) of a chord, atomically applying them
+/// upon expiry of the chord cleanup batching period.
+#[embassy_executor::task]
+pub async fn handle_deferred_midi_msg(midi_state: MidiStateSender<'static>) -> ! {
+    let mut deferred_notes = ActivatedNotes::new();
+    let mut expiry: Option<Instant> = None;
+
+    loop {
+        // if a chord cleanup period is active…
+        if let Some(x) = expiry {
+            // …this task wakes on either receipt of new MIDI or end of the period…
+            match select(Timer::at(x), DEFERRED_MIDI_MSG.wait()).await {
+                Either::First(_) => {
+                    #[cfg(feature = "defmt")]
+                    defmt::info!("Chord cleanup period over; updating state");
+                    expiry = None;
+
+                    let mut state = midi_state
+                        .try_get()
+                        .expect("MIDI state should never be uninitialized");
+                    state.activated_notes = deferred_notes;
+                    midi_state.send(state);
+                }
+                Either::Second((_, msg)) => {
+                    store_note_event(msg, &mut deferred_notes);
+                }
+            }
+        // …otherwise, the task wakes on new MIDI, initiating a new chord cleanup period
+        } else {
+            let (x, msg) = DEFERRED_MIDI_MSG.wait().await;
+            #[cfg(feature = "defmt")]
+            defmt::info!("Initiating chord cleanup period");
+            expiry = Some(x);
+            // Take a snapshot of the current state of activated notes to use as the basis for the atomic
+            // update at the end of the cleanup period.
+            deferred_notes = midi_state
+                .try_get()
+                .expect("MIDI state should never be uninitialized")
+                .activated_notes;
+            store_note_event(msg, &mut deferred_notes);
+        }
+    }
+
+    fn store_note_event(msg: MidiMessage, store: &mut ActivatedNotes) {
+        match msg {
+            MidiMessage::NoteOff(_channel, note, _velocity) => {
+                #[cfg(feature = "defmt")]
+                defmt::info!(
+                    "Batching NoteOff: channel {}, note {}, velocity: {}",
+                    _channel.number(),
+                    note.to_str(),
+                    u8::from(_velocity)
+                );
+                store.remove(note);
+            }
+            MidiMessage::NoteOn(_channel, note, _velocity) => {
+                #[cfg(feature = "defmt")]
+                defmt::info!(
+                    "Batching NoteOn: channel {}, note {}, velocity: {}",
+                    _channel.number(),
+                    note.to_str(),
+                    u8::from(_velocity)
+                );
+                store.add(note);
+            }
+            _ => {
+                panic!("Only NoteOff and NoteOn events may be deferred");
             }
         }
     }

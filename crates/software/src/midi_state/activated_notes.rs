@@ -59,26 +59,6 @@ impl ActivatedNotes {
         }
     }
 
-    /// Return the [`Note`] that was activated first.
-    pub fn first(&self) -> Option<Note> {
-        self.data.first().map(|&u7| u7.into())
-    }
-
-    /// Return the [`Note`] that was activated last.
-    pub fn last(&self) -> Option<Note> {
-        self.data.last().map(|&u7| u7.into())
-    }
-
-    /// Return the highest activated [`Note`] (i.e., the rightmost on a keyboard).
-    pub fn highest(&self) -> Option<Note> {
-        self.data.iter().max().map(|&u7| u7.into())
-    }
-
-    /// Return the lowest activated [`Note`] (i.e., the leftmost on a keyboard).
-    pub fn lowest(&self) -> Option<Note> {
-        self.data.iter().min().map(|&u7| u7.into())
-    }
-
     /// Remove a [`Note`] from the list of those currently activated. Equivalent to releasing a depressed key on a keyboard.
     pub fn remove(&mut self, note: Note) {
         self.data.retain(|&n| n != U7::from_u8_lossy(note as u8));
@@ -87,6 +67,14 @@ impl ActivatedNotes {
     /// Determine if any [`Note`]s are activated.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    /// Returns an [`Iterator`] over the activated [`Note`]s.
+    ///
+    /// Order is preserved; e.g., the first performed `Note` can be accessed via the first call to `.next()`, and the
+    /// last performed `Note` is accessible via `.last()`.
+    pub fn iter(&self) -> impl Iterator<Item = Note> {
+        self.data.iter().map(|&i| Note::from(i))
     }
 }
 
@@ -161,46 +149,6 @@ mod tests {
     }
 
     #[test]
-    fn first() {
-        let chord = chord();
-        assert_eq!(
-            Some(<U7 as Into<Note>>::into(E_NOTE)),
-            chord.first(),
-            "Expected left but right"
-        );
-    }
-
-    #[test]
-    fn last() {
-        let chord = chord();
-        assert_eq!(
-            Some(<U7 as Into<Note>>::into(G_NOTE)),
-            chord.last(),
-            "Expected left but right"
-        );
-    }
-
-    #[test]
-    fn highest() {
-        let chord = chord();
-        assert_eq!(
-            Some(<U7 as Into<Note>>::into(G_NOTE)),
-            chord.highest(),
-            "Expected left but right"
-        );
-    }
-
-    #[test]
-    fn lowest() {
-        let chord = chord();
-        assert_eq!(
-            Some(<U7 as Into<Note>>::into(C_NOTE)),
-            chord.lowest(),
-            "Expected left but right"
-        );
-    }
-
-    #[test]
     fn remove() {
         let expected = ActivatedNotes::<GM2_SIMUL_NOTE_NUM> {
             data: array_vec!([U7; 32] => E_NOTE, G_NOTE),
@@ -222,5 +170,15 @@ mod tests {
     fn should_not_be_empty() {
         let activated_notes = chord();
         assert!(!activated_notes.is_empty());
+    }
+
+    #[test]
+    fn iter() {
+        let chord = chord();
+        let mut iter = chord.iter();
+        assert_eq!(Some(Note::E4), iter.next());
+        assert_eq!(Some(Note::C4), iter.next());
+        assert_eq!(Some(Note::G4), iter.next());
+        assert_eq!(None, iter.next());
     }
 }

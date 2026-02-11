@@ -21,11 +21,15 @@ mod keyboard;
 mod note_provider;
 
 use crate::{
-    chord_cleanup::{CHORD_CLEANUP_SYNC, ChordCleanupSpy, chord_cleanup_config},
-    note_provider::{NOTE_PROVIDER_SYNC, display_note_provider, select_note_provider},
+    chord_cleanup::{CHORD_CLEANUP_SYNC, ChordCleanupSpy, DEFERRED_MIDI_MSG, chord_cleanup_config},
+    keyboard::{KBD, Portamento, voltage_to_dac_value},
+    note_provider::{
+        NOTE_PROVIDER_SYNC, NoteProviderReceiver, display_note_provider, select_note_provider,
+    },
 };
 use defmt::{panic, *};
 use embassy_executor::Spawner;
+use embassy_futures::select::{Either, select};
 use embassy_stm32::{
     Config, bind_interrupts,
     dac::Dac,
@@ -39,12 +43,16 @@ use embassy_stm32::{
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     signal::Signal,
-    watch::{AnonReceiver, Receiver, Sender, Watch},
+    watch::{Receiver, Sender, Watch},
 };
-use embassy_time::{Instant, Timer};
+use embassy_time::{Duration, Instant};
 use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
-use midival_renaissance_lib::midi_state::{MidiState, Operation};
+use midival_renaissance_lib::{
+    configuration::NoteProvider,
+    midi_state::{MidiState, bytes_to_midi},
+};
 use static_cell::StaticCell;
+use wmidi::{MidiMessage, Note};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -59,27 +67,21 @@ bind_interrupts!(
 
 type UsbDriver = usb::Driver<'static, peripherals::USB_OTG_FS>;
 
-const MIDI_STATE_RECEIVER_CNT: usize = 0;
+const MIDI_STATE_RECEIVER_CNT: usize = 1;
 type MidiStateSync = Watch<CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
 type MidiStateSender<'a> = Sender<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
-type MidiStateSpy<'a> =
-    AnonReceiver<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
+type MidiStateReceiver<'a> =
+    Receiver<'a, CriticalSectionRawMutex, MidiState, MIDI_STATE_RECEIVER_CNT>;
 
 /// Synchronizes MIDI state.
 static MIDI_STATE_SYNC: MidiStateSync = Watch::new();
 
-/// Notifies the [`Instant`] at which voicing may be updated, essentially communicating the end any
-/// chord cleanup period.
-static VOICE_SCHEDULE: Signal<CriticalSectionRawMutex, Instant> = Signal::new();
+enum Trigger {
+    On,
+    Off,
+}
 
-const UPDATE_VOICING_RECEIVER_CNT: usize = 2;
-type UpdateVoicingSync = Watch<CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
-type UpdateVoicingSender<'a> = Sender<'a, CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
-type UpdateVoicingReceiver<'a> =
-    Receiver<'a, CriticalSectionRawMutex, (), UPDATE_VOICING_RECEIVER_CNT>;
-
-/// Indicates that something has changed which may affect how (or whether) the synthesizer sounds.
-static UPDATE_VOICING: UpdateVoicingSync = Watch::new();
+static TRIGGER: Signal<CriticalSectionRawMutex, Trigger> = Signal::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -196,66 +198,118 @@ async fn main(spawner: Spawner) {
 
     let chord_cleanup = CHORD_CLEANUP_SYNC.anon_receiver();
     let midi_state_sender = MIDI_STATE_SYNC.sender();
+    // initialize state before any dependent tasks so that they can always assume Some(state)
     midi_state_sender.send(MidiState::default());
     unwrap!(spawner.spawn(midi_task(class, chord_cleanup, midi_state_sender)));
 
-    let sender = UPDATE_VOICING.sender();
-    unwrap!(spawner.spawn(update_voicing(sender)));
-
-    let note_provider_receiver = NOTE_PROVIDER_SYNC
+    let note_provider = NOTE_PROVIDER_SYNC
         .receiver()
         .expect("Note provider synchronizer should have a receiver available");
-    let update_voicing = UPDATE_VOICING
-        .receiver()
-        .expect("Update voicing synchronizer should have a receiver available");
-    let midi_state_receiver = MIDI_STATE_SYNC.anon_receiver();
-    unwrap!(spawner.spawn(keyboard::keyboard(
-        dac_ch1,
-        note_provider_receiver,
-        update_voicing,
-        midi_state_receiver
+    unwrap!(
+        spawner.spawn(update_voicing(
+            MIDI_STATE_SYNC
+                .receiver()
+                .expect("MIDI State synchronizer should have a receiver available"),
+            note_provider,
+        ))
+    );
+
+    unwrap!(spawner.spawn(keyboard::keyboard(dac_ch1)));
+
+    unwrap!(spawner.spawn(chord_cleanup::handle_deferred_midi_msg(
+        MIDI_STATE_SYNC.sender()
     )));
 
     let switch_trigger = Output::new(p.PG0, Level::Low, Speed::Low);
-    let update_voicing = UPDATE_VOICING
-        .receiver()
-        .expect("Update voicing synchronizer should have a receiver available");
-    let midi_state_receiver = MIDI_STATE_SYNC.anon_receiver();
-    unwrap!(spawner.spawn(trigger(switch_trigger, update_voicing, midi_state_receiver)));
+    unwrap!(spawner.spawn(trigger(switch_trigger)));
 }
 
-/// Task responsible for kicking off voicing tasks, delaying per the chord cleanup configuration as needed.
-///
-/// Waiting inside this intermediary task prevents blocking the MIDI processing task as well as the peripherals
-/// that drive the attached synthesizer.
+/// Task responsible for kicking off voicing tasks, accounting for changes in MIDI state as well as configuration.
 #[embassy_executor::task]
-async fn update_voicing(sender: UpdateVoicingSender<'static>) {
+async fn update_voicing(
+    mut midi_state: MidiStateReceiver<'static>,
+    mut note_provider: NoteProviderReceiver<'static>,
+) {
+    // TODO: if/when support for additional instruments is added, these values should change based on the instrument
+    // selection rather than be hardcoded here
+    let default_note = Note::F3;
+    let playable_notes = Note::F3..=Note::C6;
+    let volts_per_octave = 1.0_f32;
+
+    let mut portamento: Option<Portamento> = None;
+
     loop {
-        let expiry = { VOICE_SCHEDULE.wait().await };
-        Timer::at(expiry).await;
-        sender.send(());
+        let (midi_state, note_provider) =
+            match select(midi_state.changed(), note_provider.changed()).await {
+                Either::First(state) => (state, note_provider.get().await),
+                Either::Second(np) => (midi_state.get().await, np),
+            };
+
+        let note = NoteProvider::new(note_provider, playable_notes.clone())
+            .provide_note(&midi_state.activated_notes);
+
+        // TODO: account for changes to Portamento config as well; get duration from state
+        match (portamento, note) {
+            // initialize with synth's default note
+            (None, None) => {
+                portamento = Some(Portamento::new(
+                    default_note,
+                    default_note,
+                    Duration::from_micros(0),
+                ));
+            }
+            // first note played; glide from the synth's default note
+            (None, Some(note)) => {
+                portamento = Some(Portamento::new(
+                    default_note,
+                    note,
+                    Duration::from_micros(0),
+                ));
+            }
+            // a new destination note means a new portamento (i.e., with new origin and start time) based on the old one
+            (Some(p), Some(note)) if p.destination() != note => {
+                portamento = Some(p.new_destination(note));
+            }
+            // otherwise the portamento should continue to target the last played note; nothing to do
+            (_, _) => {}
+        };
+
+        let nth_key = portamento
+            .expect("Portamento should not be uninitialized")
+            .destination() as u8
+            - *playable_notes.start() as u8;
+        let voltage = nth_key as f32 * volts_per_octave / 12.0;
+        let dac_value = voltage_to_dac_value(voltage);
+        info!(
+            "Sending {} to DAC to achieve a voltage of {}",
+            dac_value, voltage
+        );
+
+        KBD.signal(dac_value);
+
+        TRIGGER.signal(if midi_state.activated_notes.is_empty() {
+            Trigger::Off
+        } else {
+            Trigger::On
+        });
     }
 }
 
 /// Task responsible for communicating with the Micromoog's S-TRIG input.
 #[embassy_executor::task]
-async fn trigger(
-    mut switch_trigger: Output<'static>,
-    mut update_voicing: UpdateVoicingReceiver<'static>,
-    mut midi_state: MidiStateSpy<'static>,
-) -> ! {
+async fn trigger(mut switch_trigger: Output<'static>) -> ! {
     loop {
-        let _ = { update_voicing.changed().await };
-        let state = midi_state
-            .try_get()
-            .expect("MIDI state should never be uninitialized");
-
-        if state.activated_notes.is_empty() {
-            info!("Note is off");
-            switch_trigger.set_low();
-        } else {
-            info!("Note is on");
-            switch_trigger.set_high();
+        match TRIGGER.wait().await {
+            Trigger::On => {
+                #[cfg(feature = "defmt")]
+                info!("Note is on");
+                switch_trigger.set_high();
+            }
+            Trigger::Off => {
+                #[cfg(feature = "defmt")]
+                info!("Note is off");
+                switch_trigger.set_low();
+            }
         }
     }
 }
@@ -303,47 +357,54 @@ async fn process_midi<'d, T: usb::Instance + 'd>(
     let mut chord_cleanup_start: Option<Instant> = None;
     loop {
         let n = class.read_packet(&mut buf).await?;
+        let bytes = &buf[..n];
+
+        let chord_cleanup = chord_cleanup
+            .try_get()
+            .expect("Chord cleanup state should never be uninitialized");
+
         let mut state = *(midi_state
             .try_get()
             .as_mut()
             .expect("MIDI state should never be uninitialized"));
-        let operation = state.update(&buf[..n]);
 
-        midi_state.send(state);
-
-        // most changes in MIDI state should be acted upon immediately; however, the voicing of notes must be scheduled
-        // according to the chord cleanup configuration
-        if operation.contains(Operation::NoteChange) {
-            let now = Instant::now();
-            let cc = chord_cleanup
-                .try_get()
-                .expect("Chord cleanup state should never be uninitialized");
-
-            match (cc.is_enabled(), chord_cleanup_start) {
-                // chord cleanup is enabled but hasn't started
-                (true, None) => {
-                    chord_cleanup_start = Some(now);
-                    VOICE_SCHEDULE.signal(now + cc.duration());
-                }
-                // chord cleanup is enabled...
-                (true, Some(start)) => {
-                    let expiry = start + cc.duration();
-
-                    // ...and this note event lands outside the previous cleanup period, marking the beginning of a new period
-                    if now > expiry {
-                        chord_cleanup_start = Some(now);
-                        VOICE_SCHEDULE.signal(now + cc.duration());
-                    } else {
-                        info!(
-                            "Note event received during chord cleanup period, will be considered in batch"
-                        );
-                    }
-                }
-                (false, _) => {
-                    chord_cleanup_start = None;
-                    VOICE_SCHEDULE.signal(now);
-                }
+        let mut is_immediate_state_update = true;
+        bytes_to_midi(bytes).for_each(|msg| match (chord_cleanup.is_enabled(), &msg) {
+            (false, _) => {
+                state.update(msg);
             }
+            (true, MidiMessage::NoteOn(_, _, _) | MidiMessage::NoteOff(_, _, _)) => {
+                is_immediate_state_update = false;
+                let now = Instant::now();
+
+                let expiry;
+                match chord_cleanup_start {
+                    None => {
+                        chord_cleanup_start = Some(now);
+                        expiry = now + chord_cleanup.duration();
+                    }
+                    Some(start) => {
+                        let x = start + chord_cleanup.duration();
+                        if now > x {
+                            // in this branch, the note event arrived outside the previous cleanup period, starting a new period
+                            chord_cleanup_start = Some(now);
+                            expiry = now + chord_cleanup.duration();
+                        } else {
+                            // otherwise, the previous expiry is valid for this event
+                            expiry = x;
+                        }
+                    }
+                };
+
+                DEFERRED_MIDI_MSG.signal((expiry, msg.to_owned()));
+            }
+            (true, _) => {
+                state.update(msg);
+            }
+        });
+
+        if is_immediate_state_update {
+            midi_state.send(state);
         }
     }
 }

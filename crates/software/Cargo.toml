@@ -8,7 +8,6 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-bitmask-enum = "2.2.5"
 defmt = { version = "1.0.1", optional = true }
 embassy-time = "0.5"
 num-derive = "0.4.2"

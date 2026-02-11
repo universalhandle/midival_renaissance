@@ -1,21 +1,106 @@
 //! Controls the device's communication with the KBD input.
 
-use crate::{MidiStateSpy, UpdateVoicingReceiver, note_provider::NoteProviderReceiver};
-use defmt::info;
-use embassy_futures::select::{Either, select};
 use embassy_stm32::{
     dac::{DacCh1, Value},
     mode::Async,
     peripherals::DAC1,
 };
-use midival_renaissance_lib::configuration::NotePriority;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+use embassy_time::{Duration, Instant};
 use wmidi::Note;
+
+pub static KBD: Signal<CriticalSectionRawMutex, Value> = Signal::new();
+
+/// Contains data necessary to execute a portamento or glide effect.
+#[derive(Clone, Copy, Debug)]
+pub struct Portamento {
+    /// Indicates the starting point of the glide.
+    ///
+    /// Uses `u16` internally for compatibility with the expected DAC value. Also, when a new note is performed during
+    /// a glide, a new glide should begin from exactly that point. The choice of `u16` offers a level of granularity that
+    /// [`Note`] does not.
+    origin: u16,
+    /// Indicates the end of the glide; when this [`Note`] is reached, there is nothing left to do.
+    destination: Note,
+    /// The [`Instant`] at which the glide began.
+    start: Instant,
+    /// How long after the `start` to stretch the effect.
+    duration: Duration,
+}
+
+impl Portamento {
+    /// Constructs a new [`Portamento`].
+    pub fn new(origin: Note, destination: Note, duration: Duration) -> Self {
+        Self {
+            origin: u8::from(origin).into(),
+            destination: destination,
+            start: Instant::now(),
+            duration,
+        }
+    }
+
+    /// Given a new destination, constructs a new [`Portamento`] based on the existing one.
+    ///
+    /// This is especially useful for starting a glide from in-between [`Note`]s.
+    pub fn new_destination(self, destination: Note) -> Self {
+        Self {
+            origin: self.glide(),
+            destination: destination,
+            start: Instant::now(),
+            duration: self.duration,
+        }
+    }
+
+    /// Getter.
+    pub fn destination(&self) -> Note {
+        self.destination
+    }
+
+    /// Getter.
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
+
+    /// Setter.
+    pub fn set_duration(&mut self, duration: Duration) {
+        self.duration = duration;
+    }
+
+    /// Returns the current position in the glide, i.e., the `u16` representation of the DAC value for
+    /// the current [`Note`] or between-[`Note`] value.
+    pub fn glide(&self) -> u16 {
+        let total_distance =
+            u16::from(<Note as Into<u8>>::into(self.destination)).abs_diff(self.origin);
+        let slew_adj = f32::from(total_distance) * self.progress();
+
+        self.origin + slew_adj as u16
+    }
+
+    /// Indicates progress through the glide, where 0.0 is the origin and 1.0 is the destination.
+    fn progress(&self) -> f32 {
+        let now = Instant::now();
+        let time_gliding = now - self.start;
+
+        // if the portamento time has been reduced so much that the glide should have
+        // already finished, progress is 100% and the portamento should end
+        if time_gliding > self.duration {
+            1.0
+        } else {
+            time_gliding.as_micros() as f32 / self.duration.as_micros() as f32
+        }
+    }
+
+    /// Returns `true` if glide has arrived at its destination, otherwise `false`.
+    fn is_done(&self) -> bool {
+        Instant::now() > self.start + self.duration
+    }
+}
 
 /// Helper function to convert the voltage required for an instrument to play a specific note to a <abbr name="digital-to-analog converter">DAC</abbr> value.
 ///
 /// There's an uncomfortable amount of hardcoding here. Ideally we could do without it, but, if not, this is the most appropriate place for it, as this is
 /// where all the hardware-specific code goes.
-fn voltage_to_dac_value(voltage: f32) -> Value {
+pub fn voltage_to_dac_value(voltage: f32) -> Value {
     Value::Bit12Right(
         (voltage
             // This is the reference voltage 3.333333; TODO: this should not be hardcoded, as reference voltages may vary
@@ -32,46 +117,9 @@ fn voltage_to_dac_value(voltage: f32) -> Value {
 
 /// Task responsible for communicating with the Micromoog's KBD input.
 #[embassy_executor::task]
-pub async fn keyboard(
-    mut dac: DacCh1<'static, DAC1, Async>,
-    mut note_provider: NoteProviderReceiver<'static>,
-    mut update_voicing: UpdateVoicingReceiver<'static>,
-    mut midi_state: MidiStateSpy<'static>,
-) -> ! {
-    // TODO: if/when support for additional instruments is added, these values should change based on the instrument
-    // selection rather than be hardcoded here
-    let playable_notes = Note::F3..=Note::C6;
-    let volts_per_octave = 1.0_f32;
-    let default_note = Note::F3;
-
-    let mut voiced_note: Note = default_note;
+pub async fn keyboard(mut dac: DacCh1<'static, DAC1, Async>) -> ! {
     loop {
-        let note_priority = match select(update_voicing.changed(), note_provider.changed()).await {
-            Either::First(_) => note_provider.get().await,
-            Either::Second(np) => np,
-        };
-
-        let state = midi_state
-            .try_get()
-            .expect("MIDI state should never be uninitialized");
-
-        voiced_note = match note_priority {
-            NotePriority::First => state.activated_notes.first(),
-            NotePriority::Last => state.activated_notes.last(),
-            NotePriority::Low => state.activated_notes.lowest(),
-            NotePriority::High => state.activated_notes.highest(),
-        }
-        // when all keys have been released, the oscillator is meant to retain the frequency of the last played note
-        .unwrap_or(voiced_note);
-
-        let nth_key = voiced_note as u8 - *playable_notes.start() as u8;
-        let voltage = nth_key as f32 * volts_per_octave / 12.0;
-
-        let dac_value = voltage_to_dac_value(voltage);
-        info!(
-            "Sending {} to DAC to achieve a voltage of {}",
-            dac_value, voltage
-        );
-        dac.set(dac_value);
+        let value = KBD.wait().await;
+        dac.set(value);
     }
 }

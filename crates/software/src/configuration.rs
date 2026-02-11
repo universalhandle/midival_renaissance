@@ -12,6 +12,9 @@ pub use input_mode::*;
 mod note_priority;
 pub use note_priority::*;
 
+mod note_provider;
+pub use note_provider::*;
+
 use num_traits::{FromPrimitive, ToPrimitive};
 
 /// A trait which allows infinite cycling of an enum's variants.
