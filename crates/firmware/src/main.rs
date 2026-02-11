@@ -22,7 +22,7 @@ mod note_provider;
 
 use crate::{
     chord_cleanup::{CHORD_CLEANUP_SYNC, ChordCleanupSpy, DEFERRED_MIDI_MSG, chord_cleanup_config},
-    keyboard::{KBD, Portamento, voltage_to_dac_value},
+    keyboard::{KBD, voltage_to_dac_value},
     note_provider::{
         NOTE_PROVIDER_SYNC, NoteProviderReceiver, display_note_provider, select_note_provider,
     },
@@ -50,6 +50,7 @@ use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointEr
 use midival_renaissance_lib::{
     configuration::NoteProvider,
     midi_state::{MidiState, bytes_to_midi},
+    portamento::Portamento,
 };
 use static_cell::StaticCell;
 use wmidi::{MidiMessage, Note};
