@@ -22,7 +22,7 @@ mod note_provider;
 
 use crate::{
     chord_cleanup::{CHORD_CLEANUP_SYNC, ChordCleanupSpy, DEFERRED_MIDI_MSG, chord_cleanup_config},
-    keyboard::{KBD, voltage_to_dac_value},
+    keyboard::KBD,
     note_provider::{
         NOTE_PROVIDER_SYNC, NoteProviderReceiver, display_note_provider, select_note_provider,
     },
@@ -48,9 +48,10 @@ use embassy_sync::{
 use embassy_time::{Duration, Instant};
 use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
 use midival_renaissance_lib::{
-    configuration::NoteProvider,
+    configuration::{Keyboard, NotePriority},
     midi_state::{MidiState, bytes_to_midi},
     portamento::Portamento,
+    voltage::Voltage,
 };
 use static_cell::StaticCell;
 use wmidi::{MidiMessage, Note};
@@ -235,9 +236,10 @@ async fn update_voicing(
     // selection rather than be hardcoded here
     let default_note = Note::F3;
     let playable_notes = Note::F3..=Note::C6;
-    let volts_per_octave = 1.0_f32;
+    let voltage_per_octave = Voltage::from_volts(1.0);
 
-    let mut portamento: Option<Portamento> = None;
+    // TODO: hardcoding `NotePriority` is no good for when we want to add an arpeggiator; factor this out later
+    let mut portamento: Option<Portamento<NotePriority>> = None;
 
     loop {
         let (midi_state, note_provider) =
@@ -246,17 +248,19 @@ async fn update_voicing(
                 Either::Second(np) => (midi_state.get().await, np),
             };
 
-        let note = NoteProvider::new(note_provider, playable_notes.clone())
-            .provide_note(&midi_state.activated_notes);
+        let keyboard = Keyboard::new(note_provider, playable_notes.clone(), voltage_per_octave);
+
+        let note = keyboard.provide_note(&midi_state.activated_notes);
 
         // TODO: account for changes to Portamento config as well; get duration from state
-        match (portamento, note) {
+        match (portamento.clone(), note) {
             // initialize with synth's default note
             (None, None) => {
                 portamento = Some(Portamento::new(
                     default_note,
                     default_note,
                     Duration::from_micros(0),
+                    keyboard,
                 ));
             }
             // first note played; glide from the synth's default note
@@ -265,6 +269,7 @@ async fn update_voicing(
                     default_note,
                     note,
                     Duration::from_micros(0),
+                    keyboard,
                 ));
             }
             // a new destination note means a new portamento (i.e., with new origin and start time) based on the old one
@@ -275,18 +280,12 @@ async fn update_voicing(
             (_, _) => {}
         };
 
-        let nth_key = portamento
-            .expect("Portamento should not be uninitialized")
-            .destination() as u8
-            - *playable_notes.start() as u8;
-        let voltage = nth_key as f32 * volts_per_octave / 12.0;
-        let dac_value = voltage_to_dac_value(voltage);
-        info!(
-            "Sending {} to DAC to achieve a voltage of {}",
-            dac_value, voltage
+        KBD.signal(
+            portamento
+                .clone()
+                .expect("Portamento should not be uninitialized")
+                .glide(),
         );
-
-        KBD.signal(dac_value);
 
         TRIGGER.signal(if midi_state.activated_notes.is_empty() {
             Trigger::Off

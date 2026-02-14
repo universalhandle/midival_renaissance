@@ -12,3 +12,8 @@ pub mod midi_state;
 pub mod portamento;
 
 pub mod configuration;
+
+/// re-export for the firmware crate
+pub mod voltage {
+    pub use measurements::Voltage;
+}

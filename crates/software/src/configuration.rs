@@ -9,11 +9,8 @@ pub use envelope_trigger::*;
 mod input_mode;
 pub use input_mode::*;
 
-mod note_priority;
-pub use note_priority::*;
-
-mod note_provider;
-pub use note_provider::*;
+mod keyboard;
+pub use keyboard::*;
 
 use num_traits::{FromPrimitive, ToPrimitive};
 
