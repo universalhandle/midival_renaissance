@@ -16,6 +16,11 @@ pub struct Portamento {
 }
 
 impl Portamento {
+    /// Returns the control value for CC 5: Portamento Time.
+    pub fn time(&self) -> ControlValue {
+        self.time
+    }
+
     /// Sets the control value for CC 5: Portamento Time
     pub fn set_time(&mut self, time: ControlValue) {
         self.time = time;
@@ -57,6 +62,21 @@ impl defmt::Format for Portamento {
 mod tests {
     use super::*;
     use wmidi::U7;
+
+    #[test]
+    fn get_time() {
+        let p = Portamento {
+            enabled: true,
+            origin_override: None,
+            time: U7::from_u8_lossy(100),
+            time_lsb: None,
+        };
+        assert_eq!(
+            U7::from_u8_lossy(100),
+            p.time(),
+            "Expected left but got right"
+        );
+    }
 
     #[test]
     fn set_time() {

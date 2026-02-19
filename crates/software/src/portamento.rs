@@ -3,7 +3,7 @@
 use crate::configuration::{Keyboard, ProvideNote};
 use embassy_time::{Duration, Instant};
 use measurements::Voltage;
-use wmidi::Note;
+use wmidi::{ControlValue, Note};
 
 /// Contains data necessary to execute a portamento or glide effect.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,13 +30,18 @@ impl<T> Portamento<T>
 where
     T: ProvideNote,
 {
+    /// The Portamento Time control value is scaled against this constant such that the max value will have a [`Duration`] of `MAX_GLIDE_TIME`.
+    ///
+    /// The value for this constant was selected to match the built-in behavior of the Micromoog.
+    const MAX_GLIDE_TIME: Duration = Duration::from_secs(5);
+
     /// Constructs a new [`Portamento`].
-    pub fn new(origin: Note, destination: Note, duration: Duration, keyboard: Keyboard<T>) -> Self {
+    pub fn new(origin: Note, destination: Note, time: ControlValue, keyboard: Keyboard<T>) -> Self {
         Self {
             origin: keyboard.voltage(origin),
             destination: destination,
             start: Instant::now(),
-            duration,
+            duration: Self::MAX_GLIDE_TIME * u8::from(time).into() / 127,
             keyboard,
         }
     }
@@ -63,9 +68,9 @@ where
         self.duration
     }
 
-    /// Setter.
-    pub fn set_duration(&mut self, duration: Duration) {
-        self.duration = duration;
+    /// Given a Portamento Time control value, sets the duration of the glide.
+    pub fn set_duration(&mut self, time: ControlValue) {
+        self.duration = Self::MAX_GLIDE_TIME * u8::from(time).into() / 127;
     }
 
     /// Returns a [`Voltage`] representing the voicing (which may be between [`Note`]s) at the current position in the glide.
@@ -103,6 +108,7 @@ mod tests {
     use super::*;
     use crate::configuration::NotePriority;
     use embassy_time::MockDriver;
+    use wmidi::U7;
 
     fn keyboard() -> Keyboard<NotePriority> {
         Keyboard::new(
@@ -221,6 +227,38 @@ mod tests {
             Voltage::from_volts(1.75),
             portamento.glide(),
             "Expected glide not to overshoot the destination note"
+        );
+    }
+
+    #[test]
+    fn set_duration() {
+        let mut portamento = Portamento {
+            origin: Voltage::from_volts(0.0),
+            destination: Note::C4,
+            start: Instant::now(),
+            duration: Duration::from_millis(0),
+            keyboard: keyboard(),
+        };
+
+        portamento.set_duration(U7::from_u8_lossy(127));
+        assert_eq!(
+            Duration::from_secs(5),
+            portamento.duration,
+            "Expected maximum control value for Portamento Time to yield max glide time"
+        );
+
+        portamento.set_duration(U7::from_u8_lossy(0));
+        assert_eq!(
+            Duration::from_secs(0),
+            portamento.duration,
+            "Expected minimum control value for Portamento Time to yield instant note changes"
+        );
+
+        portamento.set_duration(U7::from_u8_lossy(64));
+        assert_eq!(
+            Duration::from_micros(2_519_685),
+            portamento.duration,
+            "Duration should scale with Portamento Time control value; expected left got right"
         );
     }
 }

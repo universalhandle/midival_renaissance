@@ -45,7 +45,7 @@ use embassy_sync::{
     signal::Signal,
     watch::{Receiver, Sender, Watch},
 };
-use embassy_time::{Duration, Instant};
+use embassy_time::Instant;
 use embassy_usb::{Builder, UsbDevice, class::midi::MidiClass, driver::EndpointError};
 use midival_renaissance_lib::{
     configuration::{Keyboard, NotePriority},
@@ -252,14 +252,14 @@ async fn update_voicing(
 
         let note = keyboard.provide_note(&midi_state.activated_notes);
 
-        // TODO: account for changes to Portamento config as well; get duration from state
+        // TODO: account for changes to Portamento config as well
         match (portamento.clone(), note) {
             // initialize with synth's default note
             (None, None) => {
                 portamento = Some(Portamento::new(
                     default_note,
                     default_note,
-                    Duration::from_micros(0),
+                    midi_state.portamento.time(),
                     keyboard,
                 ));
             }
@@ -268,7 +268,7 @@ async fn update_voicing(
                 portamento = Some(Portamento::new(
                     default_note,
                     note,
-                    Duration::from_micros(0),
+                    midi_state.portamento.time(),
                     keyboard,
                 ));
             }
