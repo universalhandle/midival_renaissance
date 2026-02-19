@@ -54,7 +54,7 @@ use midival_renaissance_lib::{
     voltage::Voltage,
 };
 use static_cell::StaticCell;
-use wmidi::{MidiMessage, Note};
+use wmidi::{MidiMessage, Note, U7};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -239,7 +239,14 @@ async fn update_voicing(
     let voltage_per_octave = Voltage::from_volts(1.0);
 
     // TODO: hardcoding `NotePriority` is no good for when we want to add an arpeggiator; factor this out later
-    let mut portamento: Option<Portamento<NotePriority>> = None;
+    let mut keyboard = Keyboard::new(
+        NotePriority::Low,
+        playable_notes.clone(),
+        voltage_per_octave,
+    );
+
+    let mut portamento =
+        Portamento::new(default_note, default_note, U7::from_u8_lossy(0), keyboard);
 
     loop {
         let (midi_state, note_provider) =
@@ -248,44 +255,18 @@ async fn update_voicing(
                 Either::Second(np) => (midi_state.get().await, np),
             };
 
-        let keyboard = Keyboard::new(note_provider, playable_notes.clone(), voltage_per_octave);
+        keyboard = Keyboard::new(note_provider, playable_notes.clone(), voltage_per_octave);
 
         let note = keyboard.provide_note(&midi_state.activated_notes);
 
         // TODO: account for changes to Portamento config as well
-        match (portamento.clone(), note) {
-            // initialize with synth's default note
-            (None, None) => {
-                portamento = Some(Portamento::new(
-                    default_note,
-                    default_note,
-                    midi_state.portamento.time(),
-                    keyboard,
-                ));
-            }
-            // first note played; glide from the synth's default note
-            (None, Some(note)) => {
-                portamento = Some(Portamento::new(
-                    default_note,
-                    note,
-                    midi_state.portamento.time(),
-                    keyboard,
-                ));
-            }
-            // a new destination note means a new portamento (i.e., with new origin and start time) based on the old one
-            (Some(p), Some(note)) if p.destination() != note => {
-                portamento = Some(p.new_destination(note));
-            }
-            // otherwise the portamento should continue to target the last played note; nothing to do
-            (_, _) => {}
-        };
+        if let Some(n) = note
+            && portamento.destination() != n
+        {
+            portamento = portamento.new_destination(n)
+        }
 
-        KBD.signal(
-            portamento
-                .clone()
-                .expect("Portamento should not be uninitialized")
-                .glide(),
-        );
+        KBD.signal(portamento.clone().glide());
 
         TRIGGER.signal(if midi_state.activated_notes.is_empty() {
             Trigger::Off
