@@ -1,6 +1,7 @@
 //! Provides struct for managing intra-note states, i.e., gliding from one note to another.
 
 use crate::configuration::{Keyboard, ProvideNote};
+use core::{future::poll_fn, task::Poll};
 use embassy_time::{Duration, Instant};
 use measurements::Voltage;
 use wmidi::{ControlValue, Note};
@@ -51,11 +52,29 @@ where
     /// This is especially useful for starting a glide from in-between [`Note`]s.
     pub fn new_destination(self, destination: Note) -> Self {
         Self {
-            origin: self.glide(),
+            origin: self.voltage(),
             destination,
             start: Instant::now(),
             ..self
         }
+    }
+
+    /// Returns a [`Future`] of the Portamento's current [`Voltage`] which resolves until the destination voltage is reached.
+    pub fn glide(&self) -> impl Future<Output = Voltage> {
+        poll_fn(|_| {
+            if self.is_done() {
+                Poll::Pending
+            } else {
+                Poll::Ready(self.voltage())
+            }
+        })
+    }
+
+    /// Returns `true` if glide has arrived at its destination, otherwise `false`.
+    pub fn is_done(&self) -> bool {
+        let current_voltage = self.voltage();
+        let destination_voltage = self.keyboard.voltage(self.destination);
+        current_voltage == destination_voltage
     }
 
     /// Getter.
@@ -74,7 +93,7 @@ where
     }
 
     /// Returns a [`Voltage`] representing the voicing (which may be between [`Note`]s) at the current position in the glide.
-    pub fn glide(&self) -> Voltage {
+    pub fn voltage(&self) -> Voltage {
         let destination = self.keyboard.voltage(self.destination);
         let total_journey = destination - self.origin;
         let journey_so_far = total_journey * self.progress();
@@ -95,11 +114,6 @@ where
         } else {
             time_gliding.as_micros() as f64 / self.duration.as_micros() as f64
         }
-    }
-
-    /// Returns `true` if glide has arrived at its destination, otherwise `false`.
-    fn is_done(&self) -> bool {
-        Instant::now() > self.start + self.duration
     }
 }
 
@@ -165,7 +179,7 @@ mod tests {
 
         assert_eq!(
             Voltage::from_volts(1.25),
-            portamento.glide(),
+            portamento.voltage(),
             "Expected glide up the keyboard to increase the voltage linearly"
         );
     }
@@ -185,7 +199,7 @@ mod tests {
 
         assert_eq!(
             Voltage::from_volts(1.25),
-            portamento.glide(),
+            portamento.voltage(),
             "Expected glide down the keyboard to decrease the voltage linearly"
         );
     }
@@ -205,7 +219,7 @@ mod tests {
 
         assert_eq!(
             Voltage::from_volts(1.75),
-            portamento.glide(),
+            portamento.voltage(),
             "Expected instant note changed when portamento disabled"
         );
     }
@@ -225,7 +239,7 @@ mod tests {
 
         assert_eq!(
             Voltage::from_volts(1.75),
-            portamento.glide(),
+            portamento.voltage(),
             "Expected glide not to overshoot the destination note"
         );
     }
@@ -259,6 +273,53 @@ mod tests {
             Duration::from_micros(2_519_685),
             portamento.duration,
             "Duration should scale with Portamento Time control value; expected left got right"
+        );
+    }
+
+    #[test]
+    fn is_done() {
+        let driver = time_driver();
+        let portamento = Portamento {
+            origin: Voltage::from_volts(0.0),
+            destination: Note::F4,
+            start: Instant::now(),
+            duration: Duration::from_millis(100),
+            keyboard: keyboard(),
+        };
+        assert!(!portamento.is_done(), "Expected portamento not to be done");
+
+        driver.advance(Duration::from_millis(100));
+        assert!(portamento.is_done(), "Expected portamento to be done");
+    }
+
+    #[test]
+    fn glide() {
+        use embassy_futures::poll_once;
+
+        let driver = time_driver();
+        let portamento = Portamento {
+            origin: Voltage::from_volts(0.0),
+            destination: Note::F4,
+            start: Instant::now(),
+            duration: Duration::from_millis(100),
+            keyboard: keyboard(),
+        };
+
+        assert!(
+            poll_once(portamento.glide()).is_ready(),
+            "Expected voltage to be ready on init"
+        );
+
+        driver.advance(Duration::from_millis(50));
+        assert!(
+            poll_once(portamento.glide()).is_ready(),
+            "Expected voltage to be ready halfway through journey"
+        );
+
+        driver.advance(Duration::from_millis(50));
+        assert!(
+            poll_once(portamento.glide()).is_pending(),
+            "Expected portamento to go into pending state upon reaching destination"
         );
     }
 }

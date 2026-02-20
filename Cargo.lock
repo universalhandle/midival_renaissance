@@ -707,6 +707,7 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "defmt 1.0.1",
+ "embassy-futures",
  "embassy-time",
  "measurements",
  "num-derive",

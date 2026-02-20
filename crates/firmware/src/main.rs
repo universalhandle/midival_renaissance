@@ -29,7 +29,10 @@ use crate::{
 };
 use defmt::{panic, *};
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either, select};
+use embassy_futures::{
+    select::{Either3, select3},
+    yield_now,
+};
 use embassy_stm32::{
     Config, bind_interrupts,
     dac::Dac,
@@ -249,30 +252,55 @@ async fn update_voicing(
         Portamento::new(default_note, default_note, U7::from_u8_lossy(0), keyboard);
 
     loop {
-        let (midi_state, note_provider) =
-            match select(midi_state.changed(), note_provider.changed()).await {
-                Either::First(state) => (state, note_provider.get().await),
-                Either::Second(np) => (midi_state.get().await, np),
-            };
-
-        keyboard = Keyboard::new(note_provider, playable_notes.clone(), voltage_per_octave);
-
-        let note = keyboard.provide_note(&midi_state.activated_notes);
-
-        // TODO: account for changes to Portamento config as well
-        if let Some(n) = note
-            && portamento.destination() != n
+        let (midi_state, note_provider, voltage) = match select3(
+            midi_state.changed(),
+            note_provider.changed(),
+            portamento.glide(),
+        )
+        .await
         {
-            portamento = portamento.new_destination(n)
+            Either3::First(state) => (state, note_provider.get().await, None),
+            Either3::Second(np) => (midi_state.get().await, np, None),
+            Either3::Third(voltage) => (
+                midi_state.get().await,
+                note_provider.get().await,
+                Some(voltage),
+            ),
+        };
+
+        if voltage.is_none() {
+            keyboard = Keyboard::new(note_provider, playable_notes.clone(), voltage_per_octave);
+
+            portamento.set_duration(midi_state.portamento.time());
+
+            let note = keyboard.provide_note(&midi_state.activated_notes);
+            if let Some(n) = note
+                && portamento.destination() != n
+            {
+                portamento = portamento.new_destination(n);
+            }
         }
 
-        KBD.signal(portamento.clone().glide());
+        // Calculating the voltage involves a fair amount of math (and hence some number of processor ticks). Taking a snapshot of the status here
+        // hedges (perhaps paranoically) against the possibility of sending a voltage that is 99% true to the destination then (some ticks later)
+        // calculating that the portamento is complete, precluding entering the loop again before actually sending the 100% true voltage. See usage below.
+        let portamento_has_more_work = !portamento.is_done();
+
+        KBD.signal(voltage.unwrap_or(portamento.voltage()));
 
         TRIGGER.signal(if midi_state.activated_notes.is_empty() {
             Trigger::Off
         } else {
             Trigger::On
         });
+
+        // If the portamento hasn't reached its destination yet, this task should execute again soon. First, however, it should yield control back
+        // to the executor so that other tasks have a chance to run. Should this task neglect to yield, the loop would start again, the portamento
+        // future would be immediately ready, and this task would continue running until reaching the destination, blocking the keyboard and trigger
+        // tasks from actually doing anything with the work product.
+        if portamento_has_more_work {
+            yield_now().await;
+        }
     }
 }
 

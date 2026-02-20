@@ -21,6 +21,7 @@ wmidi = { version = "4.0.10", default-features = false }
 critical-section = { version = "1.2", features = ["std"] }
 # enable the mock time driver only when testing
 embassy-time = { version = "0.5", features = ["mock-driver"] }
+embassy-futures = "0.1"
 
 [features]
 defmt = ["dep:defmt"]
