@@ -64,11 +64,6 @@ impl ActivatedNotes {
         self.data.retain(|&n| n != U7::from_u8_lossy(note as u8));
     }
 
-    /// Determine if any [`Note`]s are activated.
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
     /// Returns an [`Iterator`] over the activated [`Note`]s.
     ///
     /// Order is preserved; e.g., the first performed `Note` can be accessed via the first call to `.next()`, and the
@@ -158,18 +153,6 @@ mod tests {
         actual.remove(C_NOTE.into());
 
         assert_eq!(expected, actual, "Expected left but got right");
-    }
-
-    #[test]
-    fn should_be_empty() {
-        let activated_notes = ActivatedNotes::<GM2_SIMUL_NOTE_NUM> { data: array_vec!() };
-        assert!(activated_notes.is_empty());
-    }
-
-    #[test]
-    fn should_not_be_empty() {
-        let activated_notes = chord();
-        assert!(!activated_notes.is_empty());
     }
 
     #[test]

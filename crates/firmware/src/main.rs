@@ -233,7 +233,7 @@ async fn main(spawner: Spawner) {
 #[embassy_executor::task]
 async fn update_voicing(
     mut midi_state: MidiStateReceiver<'static>,
-    mut note_provider: NoteProviderReceiver<'static>,
+    mut note_provider_state: NoteProviderReceiver<'static>,
 ) {
     // TODO: if/when support for additional instruments is added, these values should change based on the instrument
     // selection rather than be hardcoded here
@@ -241,39 +241,43 @@ async fn update_voicing(
     let playable_notes = Note::F3..=Note::C6;
     let voltage_per_octave = Voltage::from_volts(1.0);
 
-    // TODO: hardcoding `NotePriority` is no good for when we want to add an arpeggiator; factor this out later
-    let mut keyboard = Keyboard::new(
-        NotePriority::Low,
-        playable_notes.clone(),
-        voltage_per_octave,
+    let mut portamento = Portamento::new(
+        default_note,
+        default_note,
+        U7::from_u8_lossy(0),
+        Keyboard::new(
+            NotePriority::Low,
+            playable_notes.clone(),
+            voltage_per_octave,
+        ),
     );
 
-    let mut portamento =
-        Portamento::new(default_note, default_note, U7::from_u8_lossy(0), keyboard);
-
     loop {
-        let (midi_state, note_provider, voltage) = match select3(
+        let (midi, note_provider, voltage) = match select3(
             midi_state.changed(),
-            note_provider.changed(),
+            note_provider_state.changed(),
             portamento.glide(),
         )
         .await
         {
-            Either3::First(state) => (state, note_provider.get().await, None),
-            Either3::Second(np) => (midi_state.get().await, np, None),
-            Either3::Third(voltage) => (
-                midi_state.get().await,
-                note_provider.get().await,
-                Some(voltage),
-            ),
+            Either3::First(state) => (Some(state), None, None),
+            Either3::Second(np) => (None, Some(np), None),
+            Either3::Third(voltage) => (None, None, Some(voltage)),
         };
 
+        let midi = midi.unwrap_or(midi_state.get().await);
+
+        let keyboard = Keyboard::new(
+            note_provider.unwrap_or(note_provider_state.get().await),
+            playable_notes.clone(),
+            voltage_per_octave,
+        );
+        let note = keyboard.provide_note(&midi.activated_notes);
+
+        // when waking due to changes in MIDI or note priority config, the portamento state may need to be invalidated
         if voltage.is_none() {
-            keyboard = Keyboard::new(note_provider, playable_notes.clone(), voltage_per_octave);
+            portamento.set_duration(midi.portamento.time());
 
-            portamento.set_duration(midi_state.portamento.time());
-
-            let note = keyboard.provide_note(&midi_state.activated_notes);
             if let Some(n) = note
                 && portamento.destination() != n
             {
@@ -288,7 +292,7 @@ async fn update_voicing(
 
         KBD.signal(voltage.unwrap_or(portamento.voltage()));
 
-        TRIGGER.signal(if midi_state.activated_notes.is_empty() {
+        TRIGGER.signal(if note.is_none() {
             Trigger::Off
         } else {
             Trigger::On
