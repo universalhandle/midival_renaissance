@@ -37,7 +37,7 @@ pub async fn select_note_provider(
     }
 }
 
-/// Provides a quick and dirty status indicator for user-configurable [`NotePriority`][`configuration::NotePriority`].
+/// Provides a quick and dirty status indicator for user-configurable [`NotePriority`].
 ///
 /// Each cycle is divided in half. The LED remains dark for one half. For the other, the
 /// LED lights up N times (where N is one more than the index of the selected item).

@@ -7,7 +7,7 @@
 //! It works by translating MIDI messages into electrical signals compatible with the Moog Open System, which
 //! is essentially a flavor of [CV/gate](https://en.wikipedia.org/wiki/CV/gate). In addition to enabling the Micromoog
 //! to be controlled externally, the firmware seeks to extend the capabilities of the synthesizer by allowing the
-//! [`NotePriority`][`configuration::NotePriority`] to be configured, adding arpeggiation, providing BPM (beats per minute)
+//! [`NotePriority`] to be configured, adding arpeggiation, providing BPM (beats per minute)
 //! context, and supporting keyboard expression such as aftertouch that the original hardware isn't equipped to handle.
 //! (Note: not all of these features are implemented yet.)
 //!

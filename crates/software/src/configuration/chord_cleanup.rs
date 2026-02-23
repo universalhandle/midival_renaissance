@@ -5,8 +5,8 @@ use num_derive::{FromPrimitive, ToPrimitive};
 /// expressed as divisions of a note.
 ///
 /// The intended use case of this feature is liveplaying through a controller. When playing chords on a controller with
-/// [`NotePriority`] set to low, it stands to reason that the performer expects the MIDIval Renaissance/Micromoog to
-/// provide "bass lines for free." Inserting a delay enables "close enough" timing for all the keypresses associated
+/// [`NotePriority`][super::keyboard::NotePriority] set to low, the performer should get "bass lines for free."
+/// Inserting a delay enables "close enough" timing for all the keypresses associated
 /// with the performance of a chord so that the Micromoog doesn't play the third or the fifth for a split second when
 /// those notes land before the root.
 ///

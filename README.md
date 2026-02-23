@@ -1,32 +1,22 @@
 # MIDIval Renaissance
 
-This repository contains firmware for a device which allows the [Micromoog Model 2090](https://en.wikipedia.org/wiki/Micromoog), a monophonic analog synthesizer produced by Moog Music from 1975 to 1979, to interface with modern music equipment by translating [MIDI](https://midi.org/midi-1-0) messages into electrical signals compatible with the Moog Open System, a flavor of [CV/gate](https://en.wikipedia.org/wiki/CV/gate). The firmware is written in [Rust](https://rust-lang.org/) using the [Embassy](https://embassy.dev/) framework.
+This repository contains firmware for a device which enables the [Micromoog Model 2090](https://en.wikipedia.org/wiki/Micromoog), a monophonic analog synthesizer produced by Moog Music from 1975 to 1979, to interface with modern music equipment by translating [MIDI](https://midi.org/midi-1-0) messages into electrical signals compatible with the Moog Open System, a flavor of [CV/gate](https://en.wikipedia.org/wiki/CV/gate). The firmware is written in [Rust](https://rust-lang.org/) using the [Embassy](https://embassy.dev/) framework.
 
 Presently the device is based on the [Nucleo-F767ZI development board](https://www.st.com/en/evaluation-tools/nucleo-f767zi.html), which is powered by an F7-series STM32 microcontroller.
 
-This project is in its prototyping phase. For the foreseeable future, the MIDIval Renaissance will focus on providing external controllers full access to the feature set of the Micromoog as well as extending those features. Planned extensions include making the note priority configurable, adding arpeggiation, providing BPM (beats per minute) context, and supporting keyboard expression (such as aftertouch) that the original hardware isn't equipped to handle. Support for additional synthesizers may be considered at a later date.
+This project is in its prototyping phase. For the foreseeable future, the MIDIval Renaissance will focus on providing external controllers full access to the feature set of the Micromoog as well as extending those features. Planned extensions include arpeggiation, providing BPM (beats per minute) context, and supporting keyboard expression (such as aftertouch) that the original hardware isn't equipped to handle. Support for additional synthesizers may be considered at a later date.
 
 ## Features
 
-Initial development is focused on providing the performer's MIDI controller all the functionality of the Micromoog's keyboard. This requires interfacing with the synth's S-Trig and KBD modules.
+Initial development centers on providing the performer's MIDI controller all the functionality of the Micromoog's keyboard, which is achieved by interfacing with the synth's S-Trig and Kbd inputs. Currently supported:
 
-A roadmap is beginning to take shape [here](https://github.com/universalhandle/midival_renaissance/milestones?sort=title&direction=asc). In the meantime, progress is detailed below, by module.
+- **Note selection.** Hardly worth mentioning. Press a key, hear the associated note.
+- **Envelope generation.** A note played on an external controller triggers the synth's loudness and filter envelopes as if played on the native keyboard: the contours are reset any time there is a break between notes, but notes played legato will be voiced within the same envelope contours.
+- **Portamento.** Glide between notes per the Portamento Time (MIDI <abbr title="control change">CC</abbr> 5). With a control value of 0, pitch changes instantly, while the max control value of 127 spreads the change over 5 seconds. Like the Micromoog, glide occurs regardless of articulation (e.g., legato vs. staccato). Unlike the Micromoog (oops!), the portamento produced by the MIDIval Renaissance is [untracked](https://www.reddit.com/r/synthdiy/comments/1ra9l81/question_about_portamento_terminology/), whereas the Micromoog holds the last position of the glide on note off.
+- **Configurable note priority.** When multiple notes are played on the Micromoog's keyboard, only the lowest note is expressed. This is known as low-note priority. The MIDIval Renaissance enables three additional note priority options: first-played, last-played, and high-note.
+- **Chord cleanup.** Complements the note priority configuration, accounting for human imprecision by inserting a slight delay (the span of a 32nd note, assuming 120 BPM) between MIDI input and eletrical output. For example: with note priority set to low, a performer would expect the Micromoog to provide "bass lines for free" for any performed chord. This setting enables "close enough" timing for all the keypresses that comprise the chord so that the Micromoog doesn't play the third or the fifth for a split second should they land before the root note.
 
-### S-Trig Input
-
-The purpose of the switch trigger is to signal the beginning and end of the synth's loudness and filter contours, i.e., to tell it when to sound and when to rest. The MIDIval Renaissance currently implements this exactly as does the Micromoog. That is, the contours are reset anytime there is a break between notes, but notes played legato will be voiced within the same envelope contours.
-
-On the roadmap, but not yet implemented, is a setting which would reset the contours each time a different note is voiced, regardless of how it is articulated. This means you'd get your filter sweep or volume fade-in on every new note, even if you didn't play precisely enough to leave a tiny gap between releasing one key and pressing the next.
-
-### Keyboard Input
-
-The KBD OUTPUT of the Micromoog is a dual-purpose jack which, despite the name, can be used as an input. When in input mode, it receives a signal indicating the note to voice.
-
-When multiple notes are played on the Micromoog's keyboard, only the lowest note is expressed. This is known as low-note priority. The MIDIval Renaissance enables three additional note priority options: first-played, last-played, and high-note.
-
-A "chord cleanup" setting complements these note priorities, accounting for human imprecision by inserting a slight delay (the span of a 32nd note, assuming 120 BPM) between MIDI input and eletrical output. If you are playing chords on your controller and have your note priority set to low, it stands to reason that you're expecting "bass lines for free" from the Micromoog. This setting enables "close enough" timing for all the keypresses that comprise a chord so that the Micromoog doesn't play the third or the fifth for a split second should they land before the root note.
-
-Also implemented in the KBD module is the Micromoog's glide or portamento feature. It is not yet supported by the MIDIval Renaissance.
+Integrations with the Filter, Osc, and Modulation inputs will come later. There are no plans around the Audio input. A more detailed roadmap is beginning to take shape [here](https://github.com/universalhandle/midival_renaissance/milestones?sort=title&direction=asc).
 
 ## The Hardware
 
@@ -39,13 +29,13 @@ The prototype is comprised of the following components:
 - S9013 NPN (negative-positive-negative) transistor (1)
 - pushbutton switch (1)
 
-Not included in this list: the cables required to connect the prototype to the Micromoog or other devices.
+Not included in this list: jumper wires or the cables required to connect the prototype to the Micromoog or other devices.
 
 The following diagram (also available on [Cirkit Designer](https://app.cirkitdesigner.com/project/f18956fb-62a4-4b81-830d-1114c3f1d9e9)) shows how the components are wired:
 
 ![Ardour configuration screenshot](./.readme-assets/wiring-diagram.svg)
 
-The top jack in the diagram connects to the Micromoog's KBD port. Its non-normalled tip pin is wired to GPIO PA4 via the yellow wire.
+The top jack in the diagram connects to the Micromoog's Kbd port. Its non-normalled tip pin is wired to GPIO PA4 via the yellow wire.
 
 The bottom jack connects to the Micromoog's S-Trig port. Note that this circuit is for connecting via a bona fide S-Trigger cable, not a V-Trigger-to-S-Trigger cable. Either the emitter or the collector terminal of the transistor can be wired to the non-normalled tip pin of the audio jack (the orangle wire); the unused one goes to ground (teal wire). The transistor's center terminal (the base) is wired to GPIO PG0 via the red wire and the 10K resistor.
 
@@ -90,7 +80,7 @@ True to the Micromoog's physical keyboard, the MIDIval Renaissance accepts note 
 | 3                | Low-note (default) |
 | 4                | High-note          |
 
-**The button on the breadboard toggles "chord cleanup" mode.** When the blue LED on the Nucleo board is solid, the feature is enabled. This mode is intended for live-playing through a controller. As it batches and "swallows" notes by design, users will likely want to disable it if they intend to drive the attached synthesizer from a sequencer or MIDI file, where human imprecision is not a factor. See [Keyboard Input](#keyboard-input) for details on its implementation.
+**The button on the breadboard toggles "chord cleanup" mode.** When the blue LED on the Nucleo board is solid, the feature is enabled. This mode is intended for live-playing through a controller. As it batches and "swallows" notes by design, users will likely want to disable it if they intend to drive the attached synthesizer from a sequencer or MIDI file, where human imprecision is not a factor.
 
 ## Known Issues
 
